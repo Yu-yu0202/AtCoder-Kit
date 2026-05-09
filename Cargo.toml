@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 description = "A command-line tool for AtCoder like acc and oj."
 license = "MIT"
-license-file = "LICENSE"
 
 [[bin]]
 name = "ackit"
