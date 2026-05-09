@@ -41,7 +41,7 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cargo build --release -Z build-std=std,core,alloc,panic_abort --target ${{ matrix.target }}
+          cargo build --release --locked -Z build-std=std,core,alloc,panic_abort --target ${{ matrix.target }}
 
       - name: Rename Artifact
         shell: bash
