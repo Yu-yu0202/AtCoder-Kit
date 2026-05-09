@@ -13,26 +13,26 @@ use std::{env, fs, io, path::Path};
 
 fn to_bytes(value: &str, unit: &str) -> Result<usize> {
     let value = value
-        .parse::<usize>()
+        .parse::<f64>()
         .context("Failed to parse memory limit.")?;
 
     match unit.to_lowercase().as_str() {
-        "kib" => Ok(value * 1024),
-        "mib" => Ok(value * 1024 * 1024),
-        "kb" => Ok(value * 1000),
-        "mb" => Ok(value * 1000 * 1000),
+        "kib" => Ok((value * 1024.0) as usize),
+        "mib" => Ok((value * 1024.0 * 1024.0) as usize),
+        "kb" => Ok((value * 1000.0) as usize),
+        "mb" => Ok((value * 1000.0 * 1000.0) as usize),
         _ => bail!("Unknown memory unit: {}", unit),
     }
 }
 
 fn to_msecs(value: &str, unit: &str) -> Result<usize> {
     let value = value
-        .parse::<usize>()
+        .parse::<f64>()
         .context("Failed to parse time limit.")?;
 
     match unit.to_lowercase().as_str() {
-        "msec" => Ok(value),
-        "sec" => Ok(value * 1000),
+        "msec" => Ok(value as usize),
+        "sec" => Ok((value * 1000.0) as usize),
         _ => bail!("Unknown time unit: {}", unit),
     }
 }
@@ -226,18 +226,18 @@ impl Problem {
 
         let limits_re = Regex::new(
             r"(?x)
-    (?:実行時間制限|Time\sLimit):\s*
-    (?P<t_val>\d+)\s*(?P<t_unit>[a-zA-Z]+)
-    \s*/\s*
-    (?:メモリ制限|Memory\sLimit):\s*
-    (?P<m_val>\d+)\s*(?P<m_unit>[a-zA-Z]+)
-    ",
+(?:実行時間制限|Time\sLimit):\s*
+(?P<t_val>\d+(?:\.\d+)?)\s*(?P<t_unit>[a-zA-Z]+)
+\s*/\s*
+(?:メモリ制限|Memory\sLimit):\s*
+(?P<m_val>\d+(?:\.\d+)?)\s*(?P<m_unit>[a-zA-Z]+)
+",
         )
         .context("Failed to compile regex.")?;
 
-        let limits = limits_re
-            .captures(limits_text)
-            .context("Failed to parse limits.")?;
+        let limits = limits_re.captures(limits_text);
+
+        let limits = limits.context("Failed to parse limits.")?;
 
         problem.time_limit_msecs = to_msecs(&limits["t_val"], &limits["t_unit"])?;
         problem.memory_limit_bytes = to_bytes(&limits["m_val"], &limits["m_unit"])?;

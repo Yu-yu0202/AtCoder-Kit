@@ -24,7 +24,7 @@ colored = "3.1.1"
 confy = "2.0.0"
 env_logger = { version = "0.11.10", features = ["color"] }
 log = "0.4.29"
-regex = { version = "1.12.3", default-features = false, features = ["std", "perf"] }
+regex = { version = "1.12.3", default-features = false, features = ["std", "perf", "unicode-perl"] }
 reqwest = { version = "0.13.3",default-features = false, features = ["json", "cookies", "native-tls"] }
 reqwest-middleware = { version = "0.5.1", features = ["form"] }
 rpassword = "7.5.2"
