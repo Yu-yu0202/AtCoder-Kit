@@ -1,0 +1,466 @@
+[
+  {
+    "n": "><> (fishr 0.1.0)",
+    "v": 6001
+  },
+  {
+    "n": "Ada 2022 (GNAT 15.2.0)",
+    "v": 6002
+  },
+  {
+    "n": "APL (GNU APL 1.9)",
+    "v": 6003
+  },
+  {
+    "n": "Assembly MIPS O32 ABI (GNU assembler 2.42)",
+    "v": 6004
+  },
+  {
+    "n": "Assembly x64 (NASM 2.16.03)",
+    "v": 6005
+  },
+  {
+    "n": "AWK (GNU awk 5.2.1)",
+    "v": 6006
+  },
+  {
+    "n": "A言語 (interpreter af48a2a)",
+    "v": 6007
+  },
+  {
+    "n": "Bash (bash 5.3)",
+    "v": 6008
+  },
+  {
+    "n": "BASIC (FreeBASIC 1.10.1)",
+    "v": 6009
+  },
+  {
+    "n": "bc (GNU bc 1.08.2)",
+    "v": 6010
+  },
+  {
+    "n": "Befunge93 (TBC 1.0)",
+    "v": 6011
+  },
+  {
+    "n": "Brainfuck (Tritium 1.2.73)",
+    "v": 6012
+  },
+  {
+    "n": "C23 (Clang 21.1.0)",
+    "v": 6013
+  },
+  {
+    "n": "C23 (GCC 14.2.0)",
+    "v": 6014
+  },
+  {
+    "n": "C# 13.0 (.NET 9.0.8)",
+    "v": 6015
+  },
+  {
+    "n": "C# 13.0 (.NET Native AOT 9.0.8)",
+    "v": 6016
+  },
+  {
+    "n": "C++23 (GCC 15.2.0)",
+    "v": 6017
+  },
+  {
+    "n": "C3 (c3c 0.7.5)",
+    "v": 6018
+  },
+  {
+    "n": "Carp(Carp 0.5.5)",
+    "v": 6019
+  },
+  {
+    "n": "cLay (cLay 20250308-1 (GCC 15.2.0))",
+    "v": 6020
+  },
+  {
+    "n": "Clojure (babashka 1.12.208)",
+    "v": 6021
+  },
+  {
+    "n": "Clojure (clojure 1.12.2)",
+    "v": 6022
+  },
+  {
+    "n": "Clojure (Clojure AOT 1.12.2)",
+    "v": 6023
+  },
+  {
+    "n": "Clojure (ClojureScript 1.12.42 (Clojure 1.12.2 Node.js 22.19.0))",
+    "v": 6025
+  },
+  {
+    "n": "COBOL (Free) (GnuCOBOL 3.2)",
+    "v": 6026
+  },
+  {
+    "n": "Common Lisp (SBCL 2.5.8)",
+    "v": 6027
+  },
+  {
+    "n": "Crystal (Crystal 1.17.0)",
+    "v": 6028
+  },
+  {
+    "n": "Cyber (Cyber v0.3)",
+    "v": 6029
+  },
+  {
+    "n": "D (DMD 2.111.0)",
+    "v": 6030
+  },
+  {
+    "n": "D (GDC 15.2)",
+    "v": 6031
+  },
+  {
+    "n": "D (LDC 1.41.0)",
+    "v": 6032
+  },
+  {
+    "n": "Dart (Dart 3.9.2)",
+    "v": 6033
+  },
+  {
+    "n": "dc 1.5.2 (GNU bc 1.08.2)",
+    "v": 6034
+  },
+  {
+    "n": "ECLiPSe (ECLiPSe 7.1_13)",
+    "v": 6035
+  },
+  {
+    "n": "Eiffel (Gobo Eiffel 22.01)",
+    "v": 6036
+  },
+  {
+    "n": "Eiffel (Liberty Eiffel 07829e3)",
+    "v": 6037
+  },
+  {
+    "n": "Elixir (Elixir 1.18.4 (OTP 28.0.2))",
+    "v": 6038
+  },
+  {
+    "n": "Emacs Lisp(Native Compile)(GNU Emacs 29.4)",
+    "v": 6039
+  },
+  {
+    "n": "Emojicode 1.0 beta 2 (emojicodec 1.0 beta 2)",
+    "v": 6040
+  },
+  {
+    "n": "Erlang (Erlang 28.0.2)",
+    "v": 6041
+  },
+  {
+    "n": "F# 9.0 (.NET 9.0.8)",
+    "v": 6042
+  },
+  {
+    "n": "Factor (Factor 0.100)",
+    "v": 6043
+  },
+  {
+    "n": "Fish (fish 4.0.2)",
+    "v": 6044
+  },
+  {
+    "n": "Forth (gforth 0.7.3)",
+    "v": 6045
+  },
+  {
+    "n": "Fortran2018 (Flang 20.1.7)",
+    "v": 6046
+  },
+  {
+    "n": "Fortran2023 (GCC 14.2.0)",
+    "v": 6047
+  },
+  {
+    "n": "FORTRAN77 (GCC 14.2.0)",
+    "v": 6048
+  },
+  {
+    "n": "Gleam (Gleam 1.12.0 (OTP 28.0.2))",
+    "v": 6049
+  },
+  {
+    "n": "Go 1.18 (gccgo 15.2.0)",
+    "v": 6050
+  },
+  {
+    "n": "Go (go 1.25.1)",
+    "v": 6051
+  },
+  {
+    "n": "Haskell (GHC 9.8.4)",
+    "v": 6052
+  },
+  {
+    "n": "Haxe/JVM 4.3.7 (hxjava 4.2.0)",
+    "v": 6053
+  },
+  {
+    "n": "C++ IOI-Style(GNU++20) (GCC 14.2.0)",
+    "v": 6054
+  },
+  {
+    "n": "ISLisp (Easy-ISLisp 5.43)",
+    "v": 6055
+  },
+  {
+    "n": "Java24 (OpenJDK 24.0.2)",
+    "v": 6056
+  },
+  {
+    "n": "JavaScript (Bun 1.2.21)",
+    "v": 6057
+  },
+  {
+    "n": "JavaScript (Deno 2.4.5)",
+    "v": 6058
+  },
+  {
+    "n": "JavaScript (Node.js 22.19.0)",
+    "v": 6059
+  },
+  {
+    "n": "Jule (jule 0.1.6)",
+    "v": 6060
+  },
+  {
+    "n": "Koka (koka v3.2.2)",
+    "v": 6061
+  },
+  {
+    "n": "Kotlin (Kotlin/JVM 2.2.10)",
+    "v": 6062
+  },
+  {
+    "n": "Kuin (kuincl v.2021.8.17)",
+    "v": 6063
+  },
+  {
+    "n": "Lazy K (irori v1.0.0)",
+    "v": 6064
+  },
+  {
+    "n": "Lean (lean v4.22.0)",
+    "v": 6065
+  },
+  {
+    "n": "LLVM IR (Clang 21.1.0)",
+    "v": 6066
+  },
+  {
+    "n": "Lua (Lua 5.4.7)",
+    "v": 6067
+  },
+  {
+    "n": "Lua (LuaJIT 2.1.1703358377)",
+    "v": 6068
+  },
+  {
+    "n": "Mercury (Mercury 22.01.8)",
+    "v": 6069
+  },
+  {
+    "n": "Nim (Nim 1.6.20)",
+    "v": 6071
+  },
+  {
+    "n": "Nim (Nim 2.2.4)",
+    "v": 6072
+  },
+  {
+    "n": "OCaml (ocamlopt 5.3.0)",
+    "v": 6073
+  },
+  {
+    "n": "Octave (GNU Octave 10.2.0)",
+    "v": 6074
+  },
+  {
+    "n": "Pascal (fpc 3.2.2)",
+    "v": 6075
+  },
+  {
+    "n": "Perl (perl 5.38.2)",
+    "v": 6076
+  },
+  {
+    "n": "PHP (PHP 8.4.12)",
+    "v": 6077
+  },
+  {
+    "n": "Piet (your-diary/piet_programming_language 3.0.0) (PPM image)",
+    "v": 6078
+  },
+  {
+    "n": "Pony (ponyc 0.59.0)",
+    "v": 6079
+  },
+  {
+    "n": "PowerShell (PowerShell 7.5.2)",
+    "v": 6080
+  },
+  {
+    "n": "Prolog (SWI-Prolog 9.2.9)",
+    "v": 6081
+  },
+  {
+    "n": "Python (CPython 3.13.7)",
+    "v": 6082
+  },
+  {
+    "n": "Python (PyPy 3.11-v7.3.20)",
+    "v": 6083
+  },
+  {
+    "n": "R (GNU R 4.5.0)",
+    "v": 6084
+  },
+  {
+    "n": "ReasonML (reson 3.16.0)",
+    "v": 6085
+  },
+  {
+    "n": "Ruby 3.3 (truffleruby 25.0.0)",
+    "v": 6086
+  },
+  {
+    "n": "Ruby 3.4 (ruby 3.4.5)",
+    "v": 6087
+  },
+  {
+    "n": "Rust (rustc 1.89.0)",
+    "v": 6088
+  },
+  {
+    "n": "SageMath (SageMath 10.7)",
+    "v": 6089
+  },
+  {
+    "n": "Scala (Dotty 3.7.2)",
+    "v": 6090
+  },
+  {
+    "n": "Scala 3.7.2 (Scala Native 0.5.8)",
+    "v": 6091
+  },
+  {
+    "n": "Scheme (ChezScheme 10.2.0)",
+    "v": 6092
+  },
+  {
+    "n": "Scheme (Gauche 0.9.15)",
+    "v": 6093
+  },
+  {
+    "n": "Seed7 (Seed7 3.5.0)",
+    "v": 6094
+  },
+  {
+    "n": "Swift 6.2",
+    "v": 6095
+  },
+  {
+    "n": "Tcl (tclsh 9.0.1)",
+    "v": 6096
+  },
+  {
+    "n": "Terra (Terra 1.2.0)",
+    "v": 6097
+  },
+  {
+    "n": "TeX (tex 3.141592653)",
+    "v": 6098
+  },
+  {
+    "n": "Text (cat 9.4)",
+    "v": 6099
+  },
+  {
+    "n": "TypeScript 5.8 (Deno 2.4.5)",
+    "v": 6100
+  },
+  {
+    "n": "TypeScript 5.9 (tsc 5.9.2 (Bun 1.2.21))",
+    "v": 6101
+  },
+  {
+    "n": "TypeScript 5.9 (tsc 5.9.2 (Node.js 22.19.0))",
+    "v": 6102
+  },
+  {
+    "n": "Uiua (uiua 0.16.2)",
+    "v": 6103
+  },
+  {
+    "n": "Unison (Unison 0.5.47)",
+    "v": 6104
+  },
+  {
+    "n": "V (0.4.10)",
+    "v": 6105
+  },
+  {
+    "n": "Vala (valac 0.56.18)",
+    "v": 6106
+  },
+  {
+    "n": "Verilog 2012 (Icarus Verilog 12.0)",
+    "v": 6107
+  },
+  {
+    "n": "Veryl (veryl 0.16.4)",
+    "v": 6108
+  },
+  {
+    "n": "WebAssembly (wabt 1.0.34 + iwasm 2.4.1)",
+    "v": 6109
+  },
+  {
+    "n": "Whitespace (whitespacers 1.3.0)",
+    "v": 6110
+  },
+  {
+    "n": "Zig (Zig 0.15.1)",
+    "v": 6111
+  },
+  {
+    "n": "なでしこ (cnako3 3.7.8 (Node.js 22.19.0))",
+    "v": 6112
+  },
+  {
+    "n": "プロデル (mono版プロデル 2.0.1353)",
+    "v": 6113
+  },
+  {
+    "n": "Julia (Julia 1.11.6)",
+    "v": 6114
+  },
+  {
+    "n": "Python (Codon 0.19.3)",
+    "v": 6115
+  },
+  {
+    "n": "C++23 (Clang 21.1.0)",
+    "v": 6116
+  },
+  {
+    "n": "Fix (1.1.0-alpha.12)",
+    "v": 6117
+  },
+  {
+    "n": "SQL (DuckDB 1.3.2)",
+    "v": 6118
+  }
+]
