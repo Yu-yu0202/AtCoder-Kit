@@ -13,7 +13,7 @@ use std::result::Result::Ok;
 
 pub fn get_revel_session() -> Result<String> {
     warn!("No REVEL_SESSION found. Please paste your REVEL_SESSION cookie value from browser.");
-    info!("️How to: "); //TODO: Add docs for how to get REVEL_SESSION cookie value (Low)
+    info!("️How to: https://github.com/Yu-yu0202/AtCoder-Kit/blob/main/docs/ja/Ex01-REVEL_SESSIONの取得.md");
 
     let token =
         prompt_password("Paste your REVEL_SESSION: ").context("Failed to read REVEL_SESSION.")?;
