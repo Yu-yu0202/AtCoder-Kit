@@ -6,7 +6,8 @@ use http::StatusCode;
 use scraper::{Html, Selector};
 use serde::Serialize;
 use std::env;
-use tokio::{fs, io, io::AsyncBufReadExt};
+use std::process::Stdio;
+use tokio::{fs, io, io::AsyncBufReadExt, process};
 
 #[derive(Serialize, Debug)]
 struct SubmitData {
@@ -55,6 +56,35 @@ pub async fn submit() -> Result<String> {
         "Failed to get problem {} from contest.",
         problem_name
     ))?;
+
+    if let Some(pre_submit) = template_config.pre_submit {
+        let mut cmd = process::Command::new(&pre_submit[0]);
+        if pre_submit.len() > 1 {
+            cmd.args(&pre_submit[1..]);
+        }
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let result = cmd
+            .spawn()
+            .context("Failed to run pre-submit command.")?
+            .wait_with_output()
+            .await
+            .context("Failed to run pre-submit command.")?;
+
+        if !result.status.success() {
+            let stdout = String::from_utf8_lossy(&result.stdout);
+            let stderr = String::from_utf8_lossy(&result.stderr);
+
+            bail!(
+                "Failed to run pre-submit command.\nexit code: {}\nstdout:\n{}\nstderr:\n{}",
+                result.status.code().unwrap_or(-1),
+                stdout,
+                stderr
+            );
+        }
+    }
 
     let problem_res = CLIENT
         .get(&problem.url)

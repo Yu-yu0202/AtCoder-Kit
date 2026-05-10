@@ -69,6 +69,7 @@ pub struct TemplateConfig {
     pub language_id: u16,
     pub exec_command: Vec<String>,
     pub compile_command: Option<Vec<String>>,
+    pub pre_submit: Option<Vec<String>>,
 }
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug)]
@@ -146,6 +147,7 @@ pub fn new_template(
     submit_file: &str,
     exec_command: &str,
     compile_command: Option<&str>,
+    pre_submit: Option<&str>,
     is_default: bool,
 ) -> Result<PathBuf> {
     let exec_command =
@@ -156,6 +158,11 @@ pub fn new_template(
         .transpose()
         .context("Failed to parse compile command.")?;
 
+    let pre_submit = pre_submit
+        .map(|c| shell_words::split(&c))
+        .transpose()
+        .context("Failed to parse pre-submit command.")?;
+
     let language_id = select_language_id()?;
 
     let config = TemplateConfig {
@@ -163,6 +170,7 @@ pub fn new_template(
         submit_file: PathBuf::from(submit_file),
         exec_command,
         compile_command,
+        pre_submit,
         language_id,
     };
 
