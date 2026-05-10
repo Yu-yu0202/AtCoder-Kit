@@ -1,0 +1,44 @@
+name: Test And Cache
+
+on:
+  push:
+    branches: [ "main" ]
+
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    name: Test for ${{ matrix.os }}(${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-05-01
+          targets: ${{ matrix.target }}
+          components: rust-src
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release-${{ matrix.target }}"
+          cache-targets: 'true'
+
+      - name: Test
+        run: |
+          cargo test --release --locked -Z build-std=std,core,alloc,panic_abort --target ${{ matrix.target }}
