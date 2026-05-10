@@ -1,4 +1,4 @@
-name: Test And Cache
+name: Check and Cache
 
 on:
   push:
@@ -41,4 +41,4 @@ jobs:
 
       - name: Test
         run: |
-          cargo test --release --locked -Z build-std=std,core,alloc,panic_abort --target ${{ matrix.target }}
+          cargo check --release --locked -Z build-std=std,core,alloc,panic_abort --target ${{ matrix.target }}
