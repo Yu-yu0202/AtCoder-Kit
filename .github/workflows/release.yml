@@ -26,16 +26,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
-        shell: bash
-        run: |
-          rustup toolchain install nightly --component rust-src
-          rustup default nightly
-          rustup target add ${{ matrix.target }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-05-01
+          targets: ${{ matrix.target }}
+          components: rust-src
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: v1-${{ matrix.target }}
+          shared-key: "release-${{ matrix.target }}"
           cache-targets: 'true'
 
       - name: Build
@@ -47,7 +47,7 @@ jobs:
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release/
-          if [ "${{ matrix.os }}" == "windows-latest" ]; then
+          if [ "${{ runner.os }}" == "Windows" ]; then
             mv ackit.exe ${{ matrix.artifact_name }}
           else
             mv ackit ${{ matrix.artifact_name }}
