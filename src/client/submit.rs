@@ -57,7 +57,7 @@ pub async fn submit() -> Result<String> {
         problem_name
     ))?;
 
-    if let Some(pre_submit) = template_config.pre_submit.as_deref() {
+    if let Some(pre_submit) = template_config.pre_submit.as_deref().filter(|s| !s.is_empty()) {
         let mut cmd = process::Command::new(&pre_submit[0]);
         if pre_submit.len() > 1 {
             cmd.args(&pre_submit[1..]);

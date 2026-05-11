@@ -161,7 +161,8 @@ pub fn new_template(
     let pre_submit = pre_submit
         .map(|c| shell_words::split(&c))
         .transpose()
-        .context("Failed to parse pre-submit command.")?;
+        .context("Failed to parse pre-submit command.")?
+        .filter(|v| !v.is_empty());
 
     let language_id = select_language_id()?;
 
