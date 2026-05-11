@@ -100,6 +100,10 @@ enum Template {
         /// (ex. "g++ main.cpp -O3", "cargo build")
         #[arg(short, long)]
         compile_command: Option<String>,
+        /// Pre-submit Command
+        /// (ex. execute bundler)
+        #[arg(short, long)]
+        pre_submit: Option<String>,
         /// Set as default template
         #[arg(short, long)]
         is_default: bool,
@@ -129,7 +133,7 @@ async fn run(args: Cli) -> Result<()> {
         Commands::Submit { no_test } => submit(no_test).await,
         Commands::Template { action } => {
             command!(action,
-                Template::New { name, submit_file, exec_command, compile_command, is_default } => new(&*name, &*submit_file, &*exec_command, compile_command.as_deref(), is_default).await
+                Template::New { name, submit_file, exec_command, compile_command, pre_submit, is_default } => new(&*name, &*submit_file, &*exec_command, compile_command.as_deref(), pre_submit.as_deref(), is_default).await
             )
         }
     )?;
