@@ -11,7 +11,7 @@ use tokio::{fs, io, io::AsyncBufReadExt, process};
 
 #[derive(Serialize, Debug)]
 struct SubmitData {
-    #[serde(rename = "data.taskScreenName")]
+    #[serde(rename = "data.TaskScreenName")]
     task_name: String,
 
     #[serde(rename = "data.LanguageId")]
