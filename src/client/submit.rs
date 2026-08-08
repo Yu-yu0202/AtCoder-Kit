@@ -11,7 +11,7 @@ use tokio::{fs, io, io::AsyncBufReadExt, process};
 
 #[derive(Serialize, Debug)]
 struct SubmitData {
-    #[serde(rename = "data.taskScreenName")]
+    #[serde(rename = "data.TaskScreenName")]
     task_name: String,
 
     #[serde(rename = "data.LanguageId")]
@@ -155,7 +155,7 @@ pub async fn submit() -> Result<String> {
     let source_code = read_str_crlf(&source_file).await?;
 
     let payload = SubmitData {
-        task_name: problem_name,
+        task_name: problem.id.to_string(),
         language_id: template_config.language_id.to_string(),
         source_code,
         csrf_token: csrf_token.to_string(),
@@ -220,8 +220,8 @@ pub async fn submit() -> Result<String> {
         bail!("Failed to submit task.");
     }
 
-    if !status.is_success() {
-        bail!("Failed to submit task.");
+    if status != StatusCode::FOUND /* 提出成功すると302返すらしい */ {
+        bail!("Failed to submit task: status {}", status.as_u16());
     }
 
     let submissions_res = CLIENT
@@ -250,7 +250,17 @@ pub async fn submit() -> Result<String> {
         .nth(0)
         .context("Failed to get submissions.")?;
 
-    let details_url = details.attr("href").context("Failed to get submissions.")?;
+    let href = details
+        .attr("href")
+        .context("Failed to get submissions.")?;
 
-    Ok(details_url.to_string())
+    let details_url = if href.starts_with("http://") || href.starts_with("https://") {
+        href.to_string()
+    } else if href.starts_with('/') {
+        format!("{}{}", endpoints::BASE, href)
+    } else {
+        format!("{}/{}", endpoints::BASE, href)
+    };
+
+    Ok(details_url)
 }
