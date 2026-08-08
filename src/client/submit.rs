@@ -220,8 +220,8 @@ pub async fn submit() -> Result<String> {
         bail!("Failed to submit task.");
     }
 
-    if !status.is_success() {
-        bail!("Failed to submit task.");
+    if status != StatusCode::FOUND /* 提出成功すると302返すらしい */ {
+        bail!("Failed to submit task: status {}", status.as_u16());
     }
 
     let submissions_res = CLIENT
