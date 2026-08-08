@@ -250,7 +250,10 @@ pub async fn submit() -> Result<String> {
         .nth(0)
         .context("Failed to get submissions.")?;
 
-    let details_url = details.attr("href").context("Failed to get submissions.")?;
+    let mut details_url = details.attr("href").context("Failed to get submissions.")?.to_string();
+    if !details_url.starts_with("https://atcoder.jp") {
+        details_url = format!("https://atcoder.jp{}", details_url);
+    }
 
     Ok(details_url.to_string())
 }
