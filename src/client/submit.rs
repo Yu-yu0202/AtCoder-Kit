@@ -155,7 +155,7 @@ pub async fn submit() -> Result<String> {
     let source_code = read_str_crlf(&source_file).await?;
 
     let payload = SubmitData {
-        task_name: problem_name,
+        task_name: problem.id.to_string(),
         language_id: template_config.language_id.to_string(),
         source_code,
         csrf_token: csrf_token.to_string(),
