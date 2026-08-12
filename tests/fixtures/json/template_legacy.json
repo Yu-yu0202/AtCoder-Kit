@@ -1,0 +1,7 @@
+{
+  "name": "python",
+  "submit_file": "main.py",
+  "language_id": 5078,
+  "exec_command": ["python", "main.py"],
+  "compile_command": null
+}

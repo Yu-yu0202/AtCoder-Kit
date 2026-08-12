@@ -90,6 +90,7 @@ dependencies = [
  "dialoguer",
  "env_logger",
  "http",
+ "libc",
  "log",
  "postcard",
  "regex",
@@ -102,6 +103,7 @@ dependencies = [
  "shell-words",
  "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
  "zstd",
 ]
 
