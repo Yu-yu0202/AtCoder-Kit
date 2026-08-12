@@ -319,6 +319,38 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_command_stays_suspended_until_job_attachment() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let mut process = Command::new(executable);
+        process
+            .args([
+                "--ignored",
+                "--exact",
+                "workspace::command::tests::windows_start_helper",
+                "--nocapture",
+            ])
+            .current_dir(temp.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut process_tree = ProcessTree::prepare(&mut process).unwrap();
+        let mut child = process.spawn().unwrap();
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !temp.path().join("command-started").exists(),
+            "the command ran before it was attached to the Job Object"
+        );
+
+        process_tree.attach(&child).unwrap();
+        assert!(child.wait().await.unwrap().success());
+        assert!(temp.path().join("command-started").exists());
+    }
+
     #[test]
     #[ignore]
     fn command_helper() {
@@ -352,5 +384,12 @@ mod tests {
     fn descendant_helper() {
         std::thread::sleep(Duration::from_millis(250));
         std::fs::write("descendant-alive", b"survived").unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn windows_start_helper() {
+        std::fs::write("command-started", b"started").unwrap();
     }
 }
