@@ -19,7 +19,7 @@ Rust で書かれており、AtCoder のコンテストに参加するための�
 
 また、cargo でインストールすることもできます。
 ```shell
-cargo install --git https://github.com/Yu-yu0202/AtCoder-Kit.git
+cargo install --locked --git https://github.com/Yu-yu0202/AtCoder-Kit.git
 ```
 
 ## 動作環境
@@ -29,11 +29,11 @@ cargo install --git https://github.com/Yu-yu0202/AtCoder-Kit.git
 - macOS (未確認)
 
 ### Rust（cargo でインストールする場合）
-- Rust 1.80 以降
+- Rust 1.92 以降
 
 動作確認済み:
 - rustc 1.92.0 / cargo 1.92.0
-- rustc 1.97.0-nightly / cargo 1.97.0-nightly
+- rustc 1.99.0-nightly / cargo 1.99.0-nightly
 
 ### その他
 - Linux の場合、libssl-dev のインストールが必要

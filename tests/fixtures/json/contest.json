@@ -1,0 +1,19 @@
+{
+  "id": "abc999",
+  "contest_type": "ABC",
+  "title": "Synthetic Contest",
+  "problems": {
+    "A": {
+      "id": "abc999_a",
+      "contest_id": "abc999",
+      "label": "A",
+      "url": "https://atcoder.jp/contests/abc999/tasks/abc999_a",
+      "title": "Synthetic Problem",
+      "memory_limit_bytes": 1073741824,
+      "time_limit_msecs": 2000,
+      "sample_cases": [
+        {"input": "1 2\n", "expected": "3\n"}
+      ]
+    }
+  }
+}
