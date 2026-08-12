@@ -40,6 +40,17 @@ dialoguer = { version = "0.12.0", default-features = false, features = ["fuzzy-s
 zstd = { version = "0.13.3", default-features = false }
 postcard = { version = "1.1.3", features = ["alloc"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [build-dependencies]
 zstd = "0.13.3"
 postcard = { version = "1.1.3", features = ["alloc"] }

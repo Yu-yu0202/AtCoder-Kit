@@ -1,3 +1,4 @@
+use crate::workspace::process_tree::ProcessTree;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::io::{Seek, SeekFrom, Write};
@@ -106,10 +107,15 @@ impl CommandRunner for SystemCommandRunner {
             }
         }
         process.kill_on_drop(true);
+        let mut process_tree = ProcessTree::prepare(&mut process)?;
 
         let mut child = process
             .spawn()
             .with_context(|| format!("Failed to run command '{}'.", command.program))?;
+        if let Err(error) = process_tree.attach(&child) {
+            let _ = child.kill().await;
+            return Err(error).context("Failed to isolate command process tree.");
+        }
         let stdout = child
             .stdout
             .take()
@@ -127,11 +133,13 @@ impl CommandRunner for SystemCommandRunner {
         let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
             Ok(status) => (Some(status.context("Failed to wait for command.")?), false),
             Err(_) => {
+                process_tree
+                    .terminate()
+                    .context("Failed to stop timed-out command process tree.")?;
                 child
-                    .kill()
+                    .wait()
                     .await
-                    .context("Failed to stop timed-out command.")?;
-                let _ = child.wait().await;
+                    .context("Failed to wait for timed-out command.")?;
                 (None, true)
             }
         };
@@ -280,7 +288,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_runner_stops_a_timed_out_command() {
+    async fn system_runner_stops_a_timed_out_process_tree() {
+        let temp = tempfile::tempdir().unwrap();
         let executable = std::env::current_exe().unwrap();
         let command = CommandSpec::from_words(vec![
             executable.to_string_lossy().into_owned(),
@@ -293,7 +302,7 @@ mod tests {
         let output = SystemCommandRunner
             .run(
                 &command,
-                std::env::current_dir().unwrap().as_path(),
+                temp.path(),
                 CommandInput::Null,
                 Duration::from_millis(50),
             )
@@ -303,6 +312,11 @@ mod tests {
         assert!(output.timed_out);
         assert!(!output.success);
         assert_eq!(output.exit_code, None);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !temp.path().join("descendant-alive").exists(),
+            "a descendant survived after the command timed out"
+        );
     }
 
     #[test]
@@ -317,6 +331,26 @@ mod tests {
     #[test]
     #[ignore]
     fn timeout_helper() {
+        let mut descendant = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "workspace::command::tests::descendant_helper",
+                "--nocapture",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
         std::thread::sleep(Duration::from_secs(10));
+        descendant.wait().unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn descendant_helper() {
+        std::thread::sleep(Duration::from_millis(250));
+        std::fs::write("descendant-alive", b"survived").unwrap();
     }
 }
