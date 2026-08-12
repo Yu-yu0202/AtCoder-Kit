@@ -1,6 +1,6 @@
 [package]
 name = "atcoder-kit"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.92"
 description = "A command-line tool for AtCoder like acc and oj."
