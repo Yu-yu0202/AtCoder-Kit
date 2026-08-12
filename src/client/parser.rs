@@ -330,7 +330,8 @@ mod tests {
 
     #[test]
     fn rejects_unpaired_samples_without_panicking() {
-        let html = PROBLEM_JA.replace("<section><h3>出力例 2</h3><pre>30\n</pre></section>", "");
+        let html = PROBLEM_JA.replace("\r\n", "\n");
+        let html = html.replace("<section><h3>出力例 2</h3><pre>30\n</pre></section>", "");
         assert!(parse_problem_page(&html).is_err());
     }
 

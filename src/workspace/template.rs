@@ -1,5 +1,6 @@
 use crate::APP_NAME;
 use crate::workspace::command::CommandSpec;
+use crate::workspace::template_ignore::IGNORE_FILE_NAME;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -194,6 +195,31 @@ pub(crate) struct NewTemplate<'a> {
     pub(crate) default: bool,
 }
 
+fn initialize_template_directory(staging_path: &Path, stored: &StoredTemplateConfig) -> Result<()> {
+    let source_path = staging_path.join(&stored.submit_file);
+    fs::create_dir_all(
+        source_path
+            .parent()
+            .context("Failed to create template source directory.")?,
+    )
+    .context("Failed to create template source directory.")?;
+    fs::File::create(&source_path).context("Failed to create template source file.")?;
+
+    fs::File::create(staging_path.join(IGNORE_FILE_NAME))
+        .context("Failed to create .ackitignore.")?;
+
+    let config_path = staging_path.join("template.json");
+    let mut config_file = io::BufWriter::new(
+        fs::File::create(&config_path).context("Failed to create template.json.")?,
+    );
+    serde_json::to_writer_pretty(&mut config_file, stored)
+        .context("Failed to write template.json.")?;
+    config_file
+        .flush()
+        .context("Failed to flush template.json.")?;
+    Ok(())
+}
+
 pub(crate) fn create_template(request: NewTemplate<'_>) -> Result<PathBuf> {
     validate_template_name(request.name)?;
     let submit_file = PathBuf::from(request.submit_file);
@@ -233,25 +259,7 @@ pub(crate) fn create_template(request: NewTemplate<'_>) -> Result<PathBuf> {
         .tempdir_in(&root)
         .context("Failed to create template staging directory.")?;
     let staging_path = staging.path();
-    let source_path = staging_path.join(&stored.submit_file);
-    fs::create_dir_all(
-        source_path
-            .parent()
-            .context("Failed to create template source directory.")?,
-    )
-    .context("Failed to create template source directory.")?;
-    fs::File::create(&source_path).context("Failed to create template source file.")?;
-
-    let config_path = staging_path.join("template.json");
-    let mut config_file = io::BufWriter::new(
-        fs::File::create(&config_path).context("Failed to create template.json.")?,
-    );
-    serde_json::to_writer_pretty(&mut config_file, &stored)
-        .context("Failed to write template.json.")?;
-    config_file
-        .flush()
-        .context("Failed to flush template.json.")?;
-    drop(config_file);
+    initialize_template_directory(staging_path, &stored)?;
 
     let staging_path = staging.keep();
     if let Err(error) = fs::rename(&staging_path, &final_path) {
@@ -335,5 +343,29 @@ mod tests {
         assert!(validate_relative_file_path(Path::new("src/main.rs")).is_ok());
         assert!(validate_relative_file_path(Path::new("src\\main.rs")).is_ok());
         assert!(validate_relative_file_path(Path::new("./main.rs")).is_ok());
+    }
+
+    #[test]
+    fn initializes_template_with_an_empty_ackitignore() {
+        let temp = tempfile::tempdir().unwrap();
+        let stored = StoredTemplateConfig {
+            name: "rust".into(),
+            submit_file: "src/main.rs".into(),
+            language_id: 5054,
+            exec_command: vec!["cargo".into(), "run".into()],
+            compile_command: None,
+            pre_submit: None,
+        };
+
+        initialize_template_directory(temp.path(), &stored).unwrap();
+
+        assert!(temp.path().join("src/main.rs").is_file());
+        assert_eq!(
+            fs::read(temp.path().join(IGNORE_FILE_NAME)).unwrap(),
+            Vec::<u8>::new()
+        );
+        let written: StoredTemplateConfig =
+            serde_json::from_slice(&fs::read(temp.path().join("template.json")).unwrap()).unwrap();
+        assert_eq!(written, stored);
     }
 }
