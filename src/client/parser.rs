@@ -111,6 +111,10 @@ fn parse_sample_cases(document: &Html) -> Result<Vec<SampleCase>> {
         sections = document.select(&english).collect();
     }
 
+    if sections.is_empty() {
+        bail!("Failed to find task statement sections.");
+    }
+
     let mut parts = Vec::new();
     for section in sections {
         let Some(heading) = section.select(&heading_selector).next() else {
@@ -126,10 +130,6 @@ fn parse_sample_cases(document: &Html) -> Result<Vec<SampleCase>> {
             .map(element_text)
             .context("Failed to get sample text.")?;
         parts.push((kind, text));
-    }
-
-    if parts.is_empty() {
-        bail!("Failed to find sample input/output sections.");
     }
 
     let (pairs, remainder) = parts.as_chunks::<2>();
