@@ -308,6 +308,8 @@ mod tests {
 
     const PROBLEM_JA: &str = include_str!("../../tests/fixtures/atcoder/problem_ja.html");
     const PROBLEM_EN: &str = include_str!("../../tests/fixtures/atcoder/problem_en.html");
+    const PROBLEM_LEGACY: &str = include_str!("../../tests/fixtures/atcoder/problem_legacy.html");
+    const PROBLEM_NO_SAMPLE: &str = include_str!("../../tests/fixtures/atcoder/problem_no_samples.html");
     const TASKS: &str = include_str!("../../tests/fixtures/atcoder/tasks.html");
     const SUBMIT_FORM: &str = include_str!("../../tests/fixtures/atcoder/submit_form.html");
     const SUBMISSIONS: &str = include_str!("../../tests/fixtures/atcoder/submissions.html");
@@ -331,6 +333,22 @@ mod tests {
         assert_eq!(page.time_limit_msecs, 500);
         assert_eq!(page.memory_limit_bytes, 64_000);
         assert_eq!(page.sample_cases.len(), 1);
+    }
+
+    #[test]
+    fn parses_legacy_problem_page() {
+        let page = parse_problem_page(PROBLEM_LEGACY).unwrap();
+        assert_eq!(page.label, "A");
+        assert_eq!(page.title, "Legacy Problem");
+        assert_eq!(page.sample_cases.len(), 1);
+        assert_eq!(page.sample_cases[0].input, "atcoder\n3\n");
+        assert_eq!(page.sample_cases[0].expected, "c\n");
+    }
+
+    #[test]
+    fn accepts_problem_page_without_samples() {
+        let page = parse_problem_page(PROBLEM_NO_SAMPLE).unwrap();
+        assert!(page.sample_cases.is_empty());
     }
 
     #[test]
