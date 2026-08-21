@@ -103,12 +103,17 @@ fn sample_kind(heading: &str) -> Option<SamplePartKind> {
 fn parse_sample_cases(document: &Html) -> Result<Vec<SampleCase>> {
     let japanese = selector("span.lang-ja > div.part > section")?;
     let english = selector("span.lang-en > div.part > section")?;
+    let legacy = selector("#task-statement > section")?;
+
     let heading_selector = selector("h3")?;
     let pre_selector = selector("pre")?;
 
     let mut sections = document.select(&japanese).collect::<Vec<_>>();
     if sections.is_empty() {
         sections = document.select(&english).collect();
+    }
+    if sections.is_empty() {
+        sections = document.select(&legacy).collect();
     }
 
     if sections.is_empty() {
