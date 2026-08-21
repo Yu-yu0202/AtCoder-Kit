@@ -103,12 +103,21 @@ fn sample_kind(heading: &str) -> Option<SamplePartKind> {
 fn parse_sample_cases(document: &Html) -> Result<Vec<SampleCase>> {
     let japanese = selector("span.lang-ja > div.part > section")?;
     let english = selector("span.lang-en > div.part > section")?;
+    let legacy = selector("#task-statement section")?;
+
     let heading_selector = selector("h3")?;
     let pre_selector = selector("pre")?;
 
     let mut sections = document.select(&japanese).collect::<Vec<_>>();
     if sections.is_empty() {
         sections = document.select(&english).collect();
+    }
+    if sections.is_empty() {
+        sections = document.select(&legacy).collect();
+    }
+
+    if sections.is_empty() {
+        bail!("Failed to find task statement sections.");
     }
 
     let mut parts = Vec::new();
@@ -126,10 +135,6 @@ fn parse_sample_cases(document: &Html) -> Result<Vec<SampleCase>> {
             .map(element_text)
             .context("Failed to get sample text.")?;
         parts.push((kind, text));
-    }
-
-    if parts.is_empty() {
-        bail!("Failed to find sample input/output sections.");
     }
 
     let (pairs, remainder) = parts.as_chunks::<2>();
@@ -303,6 +308,8 @@ mod tests {
 
     const PROBLEM_JA: &str = include_str!("../../tests/fixtures/atcoder/problem_ja.html");
     const PROBLEM_EN: &str = include_str!("../../tests/fixtures/atcoder/problem_en.html");
+    const PROBLEM_LEGACY: &str = include_str!("../../tests/fixtures/atcoder/problem_legacy.html");
+    const PROBLEM_NO_SAMPLE: &str = include_str!("../../tests/fixtures/atcoder/problem_no_samples.html");
     const TASKS: &str = include_str!("../../tests/fixtures/atcoder/tasks.html");
     const SUBMIT_FORM: &str = include_str!("../../tests/fixtures/atcoder/submit_form.html");
     const SUBMISSIONS: &str = include_str!("../../tests/fixtures/atcoder/submissions.html");
@@ -326,6 +333,22 @@ mod tests {
         assert_eq!(page.time_limit_msecs, 500);
         assert_eq!(page.memory_limit_bytes, 64_000);
         assert_eq!(page.sample_cases.len(), 1);
+    }
+
+    #[test]
+    fn parses_legacy_problem_page() {
+        let page = parse_problem_page(PROBLEM_LEGACY).unwrap();
+        assert_eq!(page.label, "A");
+        assert_eq!(page.title, "Legacy Problem");
+        assert_eq!(page.sample_cases.len(), 1);
+        assert_eq!(page.sample_cases[0].input, "atcoder\n3\n");
+        assert_eq!(page.sample_cases[0].expected, "c\n");
+    }
+
+    #[test]
+    fn accepts_problem_page_without_samples() {
+        let page = parse_problem_page(PROBLEM_NO_SAMPLE).unwrap();
+        assert!(page.sample_cases.is_empty());
     }
 
     #[test]
