@@ -206,6 +206,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_version() {
+        let err = Cli::try_parse_from(["ackit", "-V"]).err().unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+
+        let err = Cli::try_parse_from(["ackit", "--version"]).err().unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
+
+    #[test]
     fn parses_download_aliases_and_options() {
         assert_eq!(
             command(&["ackit", "d", "abc999", "cpp", "--no-template"]),
