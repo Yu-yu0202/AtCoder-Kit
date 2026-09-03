@@ -7,7 +7,7 @@ use colored::Colorize;
 use log::{info, warn};
 
 #[derive(Parser)]
-#[command(name = "ackit", about = format!("{}", "AtCoder-Kit".green().bold()))]
+#[command(name = "ackit", version, about = format!("{}", "AtCoder-Kit".green().bold()))]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Commands,
