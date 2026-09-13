@@ -7,7 +7,7 @@ use colored::Colorize;
 use log::{info, warn};
 
 #[derive(Parser)]
-#[command(name = "ackit", about = format!("{}", "AtCoder-Kit".green().bold()))]
+#[command(name = "ackit", version, about = format!("{}", "AtCoder-Kit".green().bold()))]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -203,6 +203,15 @@ mod tests {
 
     fn command(args: &[&str]) -> Commands {
         Cli::try_parse_from(args).unwrap().command
+    }
+
+    #[test]
+    fn parses_version() {
+        let err = Cli::try_parse_from(["ackit", "-V"]).err().unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+
+        let err = Cli::try_parse_from(["ackit", "--version"]).err().unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
     }
 
     #[test]
