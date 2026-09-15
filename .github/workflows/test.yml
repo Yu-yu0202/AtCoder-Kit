@@ -44,4 +44,4 @@ jobs:
       - name: Build (release, locked)
         shell: bash
         run: |
-          cargo build --release --locked
+          cargo build --release --locked --target ${{ matrix.target }}

@@ -45,7 +45,7 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cargo build --release --locked
+          cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Rename Artifact
         shell: bash
