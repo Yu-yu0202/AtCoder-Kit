@@ -5,6 +5,8 @@ edition = "2024"
 rust-version = "1.92"
 description = "A command-line tool for AtCoder like acc and oj."
 license = "MIT"
+repository = "https://github.com/Yu-yu0202/AtCoder-Kit"
+readme = "README.md"
 
 [[bin]]
 name = "ackit"
