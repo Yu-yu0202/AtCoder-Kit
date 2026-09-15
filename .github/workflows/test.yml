@@ -1,44 +1,47 @@
-name: Check and Cache
+name: Check and Cache Warmup
 
 on:
   push:
     branches: [ "main" ]
-
   pull_request:
     branches: [ "main" ]
+    types: [opened, ready_for_review, synchronize, reopened]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test for ${{ matrix.os }}(${{ matrix.target }})
+  check:
+    name: Check & Warmup for ${{ matrix.os }}(${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-
           - os: macos-latest
             target: aarch64-apple-darwin
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly-2026-05-01
+          toolchain: stable
           targets: ${{ matrix.target }}
-          components: rust-src
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "release-${{ matrix.target }}"
-          cache-targets: 'true'
+          cache-targets: "true"
+          cache-on-failure: "true"
 
-      - name: Test
+      - name: Build (release, locked)
+        shell: bash
         run: |
-          cargo build --release --locked -Z build-std=std,core,alloc,panic_abort --target ${{ matrix.target }}
+          cargo build --release --locked --target ${{ matrix.target }}
