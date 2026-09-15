@@ -19,6 +19,8 @@ Rust で書かれており、AtCoder のコンテストに参加するための�
 
 また、cargo でインストールすることもできます。
 ```shell
+cargo install --locked atcoder-kit
+# または（main ブランチを直接インストールするため、不安定な場合があります）
 cargo install --locked --git https://github.com/Yu-yu0202/AtCoder-Kit.git
 ```
 
