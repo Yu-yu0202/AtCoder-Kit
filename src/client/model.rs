@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ContestType {
@@ -58,5 +58,5 @@ pub(crate) struct Contest {
     pub(crate) id: String,
     pub(crate) contest_type: ContestType,
     pub(crate) title: String,
-    pub(crate) problems: HashMap<String, Problem>,
+    pub(crate) problems: BTreeMap<String, Problem>,
 }
