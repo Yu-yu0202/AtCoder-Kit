@@ -7,7 +7,7 @@ use crate::client::{AtCoderClient, endpoints};
 use crate::validation::validate_atcoder_identifier;
 use anyhow::{Context, Result, bail};
 use reqwest::StatusCode;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 fn page_error(context: &str, body: &str) -> anyhow::Error {
     let error = parse_alert(body)
@@ -57,7 +57,7 @@ impl AtCoderClient {
         })
     }
 
-    async fn fetch_problems(&self, contest_id: &str) -> Result<HashMap<String, Problem>> {
+    async fn fetch_problems(&self, contest_id: &str) -> Result<BTreeMap<String, Problem>> {
         let page = self.get_page(&endpoints::tasks(contest_id)).await?;
         if page.status == StatusCode::NOT_FOUND {
             return Err(page_error("fetch tasks", &page.body));
@@ -67,7 +67,7 @@ impl AtCoderClient {
         }
 
         let tasks = parse_task_refs(&page.body, contest_id)?;
-        let mut problems = HashMap::with_capacity(tasks.len());
+        let mut problems = BTreeMap::new();
         for task in tasks {
             let problem = self.fetch_problem(contest_id, &task.id).await?;
             let label = problem.label.clone();
