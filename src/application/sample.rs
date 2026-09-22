@@ -1,43 +1,64 @@
-use crate::workspace::command::{CommandInput, CommandRunner};
+use crate::workspace::command::{CommandInput, CommandOutput, CommandRunner};
 use crate::workspace::problem::ProblemWorkspace;
 use anyhow::Result;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 const COMPILE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) enum TestStatus {
-    Ce,
+pub(crate) enum SampleCaseStatus {
+    Ac,
+    Wa,
     Re,
     Tle,
     Ole,
-    Wa,
-    Ac,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TestResult {
-    pub(crate) status: TestStatus,
-    pub(crate) expected: String,
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-    pub(crate) exit_code: i32,
+pub(crate) struct CompileResult {
+    pub(crate) output: CommandOutput,
+    pub(crate) timeout: Duration,
 }
 
-impl TestResult {
-    pub(crate) fn is_failed(&self) -> bool {
-        self.status != TestStatus::Ac
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SampleCaseResult {
+    pub(crate) index: NonZeroUsize,
+    pub(crate) status: SampleCaseStatus,
+    pub(crate) expected: String,
+    pub(crate) output: CommandOutput,
+    pub(crate) timeout: Duration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SampleTestReport {
+    pub(crate) compilation: Option<CompileResult>,
+    pub(crate) cases: Vec<SampleCaseResult>,
+}
+
+impl SampleTestReport {
+    pub(crate) fn compile_failed(&self) -> bool {
+        self.compilation
+            .as_ref()
+            .is_some_and(|compilation| !compilation.output.success)
+    }
+
+    pub(crate) fn is_success(&self) -> bool {
+        !self.compile_failed()
+            && self
+                .cases
+                .iter()
+                .all(|case| case.status == SampleCaseStatus::Ac)
     }
 }
 
 pub(crate) async fn run_sample_tests(
     workspace: &ProblemWorkspace,
     runner: &dyn CommandRunner,
-) -> Result<Vec<TestResult>> {
-    let mut results = Vec::new();
+) -> Result<SampleTestReport> {
     let config = workspace.template();
 
-    if let Some(compile) = &config.compile_command {
+    let compilation = if let Some(compile) = &config.compile_command {
         let output = runner
             .run(
                 compile,
@@ -46,18 +67,22 @@ pub(crate) async fn run_sample_tests(
                 COMPILE_TIMEOUT,
             )
             .await?;
-        if !output.success {
-            results.push(TestResult {
-                status: TestStatus::Ce,
-                expected: String::new(),
-                stdout: output.stdout,
-                stderr: stderr_with_timeout(output.stderr, output.timed_out, COMPILE_TIMEOUT),
-                exit_code: output.exit_code.unwrap_or(-1),
+        let compilation = CompileResult {
+            output,
+            timeout: COMPILE_TIMEOUT,
+        };
+        if !compilation.output.success {
+            return Ok(SampleTestReport {
+                compilation: Some(compilation),
+                cases: Vec::new(),
             });
-            return Ok(results);
         }
-    }
+        Some(compilation)
+    } else {
+        None
+    };
 
+    let mut cases = Vec::new();
     for sample in &workspace.problem().sample_cases {
         let timeout = Duration::from_millis(workspace.problem().time_limit_msecs as u64)
             .saturating_add(Duration::from_secs(2));
@@ -70,41 +95,26 @@ pub(crate) async fn run_sample_tests(
             )
             .await?;
         let status = if output.timed_out {
-            TestStatus::Tle
+            SampleCaseStatus::Tle
         } else if output.stdout_truncated || output.stderr_truncated {
-            TestStatus::Ole
+            SampleCaseStatus::Ole
         } else if !output.success {
-            TestStatus::Re
+            SampleCaseStatus::Re
         } else if output.stdout.trim() != sample.expected.trim() {
-            TestStatus::Wa
+            SampleCaseStatus::Wa
         } else {
-            TestStatus::Ac
+            SampleCaseStatus::Ac
         };
-        results.push(TestResult {
+        cases.push(SampleCaseResult {
+            index: NonZeroUsize::new(cases.len() + 1).expect("sample case index must be non-zero"),
             status,
             expected: sample.expected.clone(),
-            stdout: output.stdout,
-            stderr: stderr_with_timeout(output.stderr, output.timed_out, timeout),
-            exit_code: output.exit_code.unwrap_or(-1),
+            output,
+            timeout,
         });
     }
 
-    Ok(results)
-}
-
-fn stderr_with_timeout(stderr: String, timed_out: bool, timeout: Duration) -> String {
-    if !timed_out {
-        return stderr;
-    }
-    let timeout_message = format!(
-        "Command timed out after {:.3} seconds.",
-        timeout.as_secs_f64()
-    );
-    if stderr.is_empty() {
-        timeout_message
-    } else {
-        format!("{timeout_message}\n{stderr}")
-    }
+    Ok(SampleTestReport { compilation, cases })
 }
 
 #[cfg(test)]
@@ -196,38 +206,29 @@ mod tests {
         (temp, workspace)
     }
 
-    #[test]
-    fn adds_a_clear_timeout_diagnostic() {
-        assert_eq!(
-            stderr_with_timeout(String::new(), true, Duration::from_millis(2500)),
-            "Command timed out after 2.500 seconds."
-        );
-        assert_eq!(
-            stderr_with_timeout("partial error".into(), true, Duration::from_secs(1)),
-            "Command timed out after 1.000 seconds.\npartial error"
-        );
-    }
-
     #[tokio::test]
     async fn classifies_sample_results_and_passes_execution_context() {
         for (mut command_output, expected_status) in [
-            (output(true, "3\n"), TestStatus::Ac),
-            (output(true, "4\n"), TestStatus::Wa),
-            (output(false, ""), TestStatus::Re),
-            (output(false, ""), TestStatus::Tle),
-            (output(true, "3\n"), TestStatus::Ole),
+            (output(true, "3\n"), SampleCaseStatus::Ac),
+            (output(true, "4\n"), SampleCaseStatus::Wa),
+            (output(false, ""), SampleCaseStatus::Re),
+            (output(false, ""), SampleCaseStatus::Tle),
+            (output(true, "3\n"), SampleCaseStatus::Ole),
         ] {
-            if expected_status == TestStatus::Tle {
+            if expected_status == SampleCaseStatus::Tle {
                 command_output.timed_out = true;
             }
-            if expected_status == TestStatus::Ole {
+            if expected_status == SampleCaseStatus::Ole {
                 command_output.stdout_truncated = true;
             }
             let (_temp, workspace) = workspace(None);
             let runner = FakeRunner::with_outputs([command_output]);
 
-            let results = run_sample_tests(&workspace, &runner).await.unwrap();
-            assert_eq!(results[0].status, expected_status);
+            let report = run_sample_tests(&workspace, &runner).await.unwrap();
+            assert!(report.compilation.is_none());
+            assert_eq!(report.cases.len(), 1);
+            assert_eq!(report.cases[0].index, NonZeroUsize::new(1).unwrap());
+            assert_eq!(report.cases[0].status, expected_status);
             let calls = runner.calls.lock().unwrap();
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].command, ["python", "main.py"]);
@@ -240,15 +241,70 @@ mod tests {
     #[tokio::test]
     async fn compile_failure_becomes_ce_and_skips_samples() {
         let (_temp, workspace) = workspace(Some(&["compiler", "main.rs"]));
-        let runner = FakeRunner::with_outputs([output(false, "compile output")]);
+        let mut compile_output = output(false, "compile output");
+        compile_output.stderr = "raw compiler stderr".into();
+        compile_output.exit_code = None;
+        let runner = FakeRunner::with_outputs([compile_output.clone()]);
 
-        let results = run_sample_tests(&workspace, &runner).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].status, TestStatus::Ce);
+        let report = run_sample_tests(&workspace, &runner).await.unwrap();
+        assert!(report.compile_failed());
+        assert!(!report.is_success());
+        assert!(report.cases.is_empty());
+        let compilation = report.compilation.as_ref().unwrap();
+        assert_eq!(compilation.timeout, COMPILE_TIMEOUT);
+        assert_eq!(compilation.output, compile_output);
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].command, ["compiler", "main.rs"]);
         assert_eq!(calls[0].input, CommandInput::Inherit);
         assert_eq!(calls[0].timeout, COMPILE_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn retains_raw_case_output_and_optional_exit_code() {
+        let (_temp, workspace) = workspace(None);
+        let mut command_output = output(true, "3\n");
+        command_output.stderr = "raw stderr\n".into();
+        command_output.exit_code = None;
+        let runner = FakeRunner::with_outputs([command_output.clone()]);
+
+        let report = run_sample_tests(&workspace, &runner).await.unwrap();
+        let case = &report.cases[0];
+        assert_eq!(case.output, command_output);
+        assert_eq!(case.timeout, Duration::from_secs(4));
+        assert!(report.is_success());
+    }
+
+    #[test]
+    fn success_requires_compilation_and_case_success() {
+        let empty = SampleTestReport {
+            compilation: None,
+            cases: Vec::new(),
+        };
+        assert!(!empty.compile_failed());
+        assert!(empty.is_success());
+
+        let compiled = SampleTestReport {
+            compilation: Some(CompileResult {
+                output: output(true, ""),
+                timeout: COMPILE_TIMEOUT,
+            }),
+            cases: Vec::new(),
+        };
+        assert!(!compiled.compile_failed());
+        assert!(compiled.is_success());
+
+        let failed_case = SampleCaseResult {
+            index: NonZeroUsize::new(1).unwrap(),
+            status: SampleCaseStatus::Wa,
+            expected: String::new(),
+            output: output(true, ""),
+            timeout: Duration::from_secs(4),
+        };
+        let failed_cases = SampleTestReport {
+            compilation: None,
+            cases: vec![failed_case],
+        };
+        assert!(!failed_cases.is_success());
     }
 }
