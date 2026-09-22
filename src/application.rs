@@ -1,7 +1,7 @@
 pub(crate) mod sample;
 mod submit;
 
-use crate::application::sample::{TestResult, run_sample_tests};
+use crate::application::sample::{SampleTestReport, run_sample_tests};
 use crate::application::submit::{prepare_solution, submit_prepared_solution};
 use crate::client::AtCoderClient;
 use crate::client::auth::{prompt_revel_session, verify_current_session};
@@ -100,7 +100,7 @@ impl Application {
         Ok(DownloadOutcome { path })
     }
 
-    pub(crate) async fn test(&self) -> Result<Vec<TestResult>> {
+    pub(crate) async fn test(&self) -> Result<SampleTestReport> {
         let workspace = ProblemWorkspace::discover_from(&self.start_path)?;
         run_sample_tests(&workspace, &SystemCommandRunner).await
     }
