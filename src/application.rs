@@ -10,7 +10,9 @@ use crate::validation::validate_atcoder_identifier;
 use crate::workspace::command::SystemCommandRunner;
 use crate::workspace::contest::save_contest_to;
 use crate::workspace::problem::ProblemWorkspace;
-use crate::workspace::template::{NewTemplate, TemplateRegistry, create_template};
+use crate::workspace::template::{
+    NewTemplate, TemplateRegistry, create_template, load_template_config_from,
+};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -182,14 +184,19 @@ impl Application {
     pub(crate) fn show_template(&self, name: &str) -> Result<TemplateDetails> {
         let registry = TemplateRegistry::load()?;
         let template = registry.get(name)?;
+
+        let config_path = template.template_path.join("template.json");
+        let config = load_template_config_from(&config_path)?;
+
         Ok(TemplateDetails {
             name: template.name.clone(),
             path: template.template_path.clone(),
-            submit_file: template.config.submit_file.clone(),
-            language_id: template.config.language_id,
-            exec_command: template.config.exec_command.clone(),
-            compile_command: template.config.compile_command.clone(),
-            pre_submit: template.config.pre_submit.clone(),
+
+            submit_file: config.submit_file,
+            language_id: config.language_id,
+            exec_command: config.exec_command.words(),
+            compile_command: config.compile_command.map(|command| command.words()),
+            pre_submit: config.pre_submit.map(|command| command.words()),
             is_default: template.is_default,
         })
     }
