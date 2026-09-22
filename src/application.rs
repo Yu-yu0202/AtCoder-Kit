@@ -49,6 +49,22 @@ pub(crate) struct TemplateCreated {
     pub(crate) path: PathBuf,
 }
 
+pub(crate) struct TemplateSummary {
+    pub(crate) name: String,
+    pub(crate) is_default: bool,
+}
+
+pub(crate) struct TemplateDetails {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) submit_file: PathBuf,
+    pub(crate) language_id: u16,
+    pub(crate) exec_command: Vec<String>,
+    pub(crate) compile_command: Option<Vec<String>>,
+    pub(crate) pre_submit: Option<Vec<String>>,
+    pub(crate) is_default: bool,
+}
+
 pub(crate) struct Application {
     start_path: PathBuf,
 }
@@ -148,5 +164,37 @@ impl Application {
         Ok(TemplateCreated {
             path: create_template(request)?,
         })
+    }
+
+    pub(crate) fn list_templates(&self) -> Result<Vec<TemplateSummary>> {
+        let registry = TemplateRegistry::load()?;
+        let mut templates = registry
+            .templates()
+            .map(|template| TemplateSummary {
+                name: template.name.clone(),
+                is_default: template.is_default,
+            })
+            .collect::<Vec<_>>();
+        templates.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(templates)
+    }
+
+    pub(crate) fn show_template(&self, name: &str) -> Result<TemplateDetails> {
+        let registry = TemplateRegistry::load()?;
+        let template = registry.get(name)?;
+        Ok(TemplateDetails {
+            name: template.name.clone(),
+            path: template.template_path.clone(),
+            submit_file: template.config.submit_file.clone(),
+            language_id: template.config.language_id,
+            exec_command: template.config.exec_command.clone(),
+            compile_command: template.config.compile_command.clone(),
+            pre_submit: template.config.pre_submit.clone(),
+            is_default: template.is_default,
+        })
+    }
+
+    pub(crate) fn set_default_template(&self, name: &str) -> Result<()> {
+        TemplateRegistry::set_default(name)
     }
 }

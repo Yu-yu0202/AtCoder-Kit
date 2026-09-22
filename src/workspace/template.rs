@@ -95,6 +95,19 @@ impl TemplateRegistry {
         confy::store(APP_NAME, CONFIG_NAME, self).context("Failed to save template configuration.")
     }
 
+    pub(crate) fn templates(&self) -> impl Iterator<Item = &TemplateData> {
+        self.templates.values()
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Result<&TemplateData> {
+        self.templates.get(name).context("Template not found.")
+    }
+
+    pub(crate) fn set_default(name: &str) -> Result<()> {
+        let registry = Self::load()?;
+        registry.with_default(name)?.save()
+    }
+
     pub(crate) fn select(&self, name: Option<&str>) -> Result<Option<&TemplateData>> {
         if let Some(name) = name {
             return self
@@ -115,6 +128,18 @@ impl TemplateRegistry {
         }
         updated.templates.insert(template.name.clone(), template);
         updated
+    }
+
+    fn with_default(&self, name: &str) -> Result<Self> {
+        if !self.templates.contains_key(name) {
+            bail!("Template not found.");
+        }
+
+        let mut updated = self.clone();
+        for (existing_name, template) in &mut updated.templates {
+            template.is_default = existing_name == name;
+        }
+        Ok(updated)
     }
 }
 
@@ -299,6 +324,22 @@ pub(crate) fn load_template_config_from(path: &Path) -> Result<TemplateConfig> {
 mod tests {
     use super::*;
 
+    fn template_data(name: &str, is_default: bool) -> TemplateData {
+        TemplateData {
+            template_path: PathBuf::from(name),
+            name: name.into(),
+            config: StoredTemplateConfig {
+                name: name.into(),
+                submit_file: "main.rs".into(),
+                language_id: 5054,
+                exec_command: vec!["cargo".into(), "run".into()],
+                compile_command: None,
+                pre_submit: None,
+            },
+            is_default,
+        }
+    }
+
     #[test]
     fn reads_legacy_template_json_without_pre_submit() {
         let stored: StoredTemplateConfig = serde_json::from_str(include_str!(
@@ -367,5 +408,34 @@ mod tests {
         let written: StoredTemplateConfig =
             serde_json::from_slice(&fs::read(temp.path().join("template.json")).unwrap()).unwrap();
         assert_eq!(written, stored);
+    }
+
+    #[test]
+    fn changes_default_template_without_mutating_original() {
+        let registry = TemplateRegistry {
+            templates: HashMap::from([
+                ("cpp".into(), template_data("cpp", true)),
+                ("rust".into(), template_data("rust", false)),
+            ]),
+        };
+
+        let updated = registry.with_default("rust").unwrap();
+
+        assert!(registry.get("cpp").unwrap().is_default);
+        assert!(!updated.get("cpp").unwrap().is_default);
+        assert!(updated.get("rust").unwrap().is_default);
+    }
+
+    #[test]
+    fn rejects_unknown_default_template() {
+        let registry = TemplateRegistry {
+            templates: HashMap::from([("cpp".into(), template_data("cpp", true))]),
+        };
+
+        assert_eq!(
+            registry.with_default("rust").unwrap_err().to_string(),
+            "Template not found."
+        );
+        assert!(registry.get("cpp").unwrap().is_default);
     }
 }
