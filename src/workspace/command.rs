@@ -31,7 +31,6 @@ impl CommandSpec {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn words(&self) -> Vec<String> {
         std::iter::once(self.program.clone())
             .chain(self.args.iter().cloned())

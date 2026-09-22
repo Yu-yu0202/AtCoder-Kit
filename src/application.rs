@@ -10,7 +10,9 @@ use crate::validation::validate_atcoder_identifier;
 use crate::workspace::command::SystemCommandRunner;
 use crate::workspace::contest::save_contest_to;
 use crate::workspace::problem::ProblemWorkspace;
-use crate::workspace::template::{NewTemplate, TemplateRegistry, create_template};
+use crate::workspace::template::{
+    NewTemplate, TemplateRegistry, create_template, load_template_config_from,
+};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -47,6 +49,22 @@ pub(crate) struct SubmitOutcome {
 
 pub(crate) struct TemplateCreated {
     pub(crate) path: PathBuf,
+}
+
+pub(crate) struct TemplateSummary {
+    pub(crate) name: String,
+    pub(crate) is_default: bool,
+}
+
+pub(crate) struct TemplateDetails {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) submit_file: PathBuf,
+    pub(crate) language_id: u16,
+    pub(crate) exec_command: Vec<String>,
+    pub(crate) compile_command: Option<Vec<String>>,
+    pub(crate) pre_submit: Option<Vec<String>>,
+    pub(crate) is_default: bool,
 }
 
 pub(crate) struct Application {
@@ -148,5 +166,42 @@ impl Application {
         Ok(TemplateCreated {
             path: create_template(request)?,
         })
+    }
+
+    pub(crate) fn list_templates(&self) -> Result<Vec<TemplateSummary>> {
+        let registry = TemplateRegistry::load()?;
+        let mut templates = registry
+            .templates()
+            .map(|template| TemplateSummary {
+                name: template.name.clone(),
+                is_default: template.is_default,
+            })
+            .collect::<Vec<_>>();
+        templates.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(templates)
+    }
+
+    pub(crate) fn show_template(&self, name: &str) -> Result<TemplateDetails> {
+        let registry = TemplateRegistry::load()?;
+        let template = registry.get(name)?;
+
+        let config_path = template.template_path.join("template.json");
+        let config = load_template_config_from(&config_path)?;
+
+        Ok(TemplateDetails {
+            name: template.name.clone(),
+            path: template.template_path.clone(),
+
+            submit_file: config.submit_file,
+            language_id: config.language_id,
+            exec_command: config.exec_command.words(),
+            compile_command: config.compile_command.map(|command| command.words()),
+            pre_submit: config.pre_submit.map(|command| command.words()),
+            is_default: template.is_default,
+        })
+    }
+
+    pub(crate) fn set_default_template(&self, name: &str) -> Result<()> {
+        TemplateRegistry::set_default(name)
     }
 }

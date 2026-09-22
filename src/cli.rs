@@ -1,5 +1,7 @@
 use crate::application::sample::{SampleCaseStatus, SampleTestReport};
-use crate::application::{AppEvent, Application, LoginOutcome, SessionStatus};
+use crate::application::{
+    AppEvent, Application, LoginOutcome, SessionStatus, TemplateDetails, TemplateSummary,
+};
 use crate::workspace::command::CommandOutput;
 use crate::workspace::template::NewTemplate;
 use anyhow::Result;
@@ -56,6 +58,18 @@ enum Commands {
 
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 enum TemplateCommand {
+    /// List registered templates
+    List,
+    /// Show a registered template
+    Show {
+        /// Template name
+        name: String,
+    },
+    /// Set the default template
+    SetDefault {
+        /// Template name
+        name: String,
+    },
     /// Create new template files
     New {
         /// Template name
@@ -76,6 +90,54 @@ enum TemplateCommand {
         #[arg(short, long)]
         default: bool,
     },
+}
+
+fn show_templates(templates: &[TemplateSummary]) {
+    if templates.is_empty() {
+        info!("No templates found.");
+        return;
+    }
+
+    info!("Templates:");
+    for template in templates {
+        let default = if template.is_default {
+            " (default)"
+        } else {
+            ""
+        };
+        info!("  {}{default}", template.name);
+    }
+}
+
+fn show_template(template: &TemplateDetails) {
+    info!("Template: {}", template.name);
+    info!(
+        "Default: {}",
+        if template.is_default { "yes" } else { "no" }
+    );
+    info!("Directory: {}", template.path.display());
+    info!("Submit file: {}", template.submit_file.display());
+    info!("Language ID: {}", template.language_id);
+    info!(
+        "Exec command: {}",
+        shell_words::join(&template.exec_command)
+    );
+    info!(
+        "Compile command: {}",
+        template
+            .compile_command
+            .as_ref()
+            .map(shell_words::join)
+            .unwrap_or_else(|| "-".into())
+    );
+    info!(
+        "Pre-submit command: {}",
+        template
+            .pre_submit
+            .as_ref()
+            .map(shell_words::join)
+            .unwrap_or_else(|| "-".into())
+    );
 }
 
 pub(crate) fn parse() -> Cli {
@@ -205,29 +267,34 @@ pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> 
             let outcome = application.submit(no_test, show_event).await?;
             info!("Submit URL: {}", outcome.submission_url);
         }
-        Commands::Template {
-            action:
-                TemplateCommand::New {
-                    name,
-                    submit_file,
-                    exec_command,
-                    compile_command,
-                    pre_submit,
-                    default,
-                },
-        } => {
-            info!("Creating new template '{name}'...");
-            let outcome = application.create_template(NewTemplate {
-                name: &name,
-                submit_file: &submit_file,
-                exec_command: &exec_command,
-                compile_command: compile_command.as_deref(),
-                pre_submit: pre_submit.as_deref(),
+        Commands::Template { action } => match action {
+            TemplateCommand::List => show_templates(&application.list_templates()?),
+            TemplateCommand::Show { name } => show_template(&application.show_template(&name)?),
+            TemplateCommand::SetDefault { name } => {
+                application.set_default_template(&name)?;
+                info!("Template '{name}' is now the default.");
+            }
+            TemplateCommand::New {
+                name,
+                submit_file,
+                exec_command,
+                compile_command,
+                pre_submit,
                 default,
-            })?;
-            info!("Template '{name}' created.");
-            info!("Template directory: {}", outcome.path.display());
-        }
+            } => {
+                info!("Creating new template '{name}'...");
+                let outcome = application.create_template(NewTemplate {
+                    name: &name,
+                    submit_file: &submit_file,
+                    exec_command: &exec_command,
+                    compile_command: compile_command.as_deref(),
+                    pre_submit: pre_submit.as_deref(),
+                    default,
+                })?;
+                info!("Template '{name}' created.");
+                info!("Template directory: {}", outcome.path.display());
+            }
+        },
     }
     Ok(())
 }
@@ -316,6 +383,28 @@ mod tests {
             ]),
             Commands::Template { .. }
         ));
+        assert_eq!(
+            command(&["ackit", "template", "list"]),
+            Commands::Template {
+                action: TemplateCommand::List,
+            }
+        );
+        assert_eq!(
+            command(&["ackit", "template", "show", "rust"]),
+            Commands::Template {
+                action: TemplateCommand::Show {
+                    name: "rust".into(),
+                },
+            }
+        );
+        assert_eq!(
+            command(&["ackit", "template", "set-default", "rust"]),
+            Commands::Template {
+                action: TemplateCommand::SetDefault {
+                    name: "rust".into(),
+                },
+            }
+        );
     }
 
     #[test]
