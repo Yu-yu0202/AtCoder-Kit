@@ -1,10 +1,12 @@
-use crate::application::sample::{TestResult, TestStatus};
+use crate::application::sample::{SampleCaseStatus, SampleTestReport};
 use crate::application::{AppEvent, Application, LoginOutcome, SessionStatus};
+use crate::workspace::command::CommandOutput;
 use crate::workspace::template::NewTemplate;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use log::{info, warn};
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "ackit", version, about = format!("{}", "AtCoder-Kit".green().bold()))]
@@ -93,34 +95,67 @@ fn show_event(event: AppEvent) {
     }
 }
 
-fn show_test_results(results: &[TestResult]) {
-    for result in results {
+fn stderr_with_timeout(output: &CommandOutput, timeout: Duration) -> String {
+    if !output.timed_out {
+        return output.stderr.clone();
+    }
+    let timeout_message = format!(
+        "Command timed out after {:.3} seconds.",
+        timeout.as_secs_f64()
+    );
+    if output.stderr.is_empty() {
+        timeout_message
+    } else {
+        format!("{timeout_message}\n{}", output.stderr)
+    }
+}
+
+fn show_test_results(report: &SampleTestReport) {
+    if let Some(compilation) = report.compilation.as_ref()
+        && !compilation.output.success
+    {
+        warn!("{}", "Compile Error".red().bold());
+        info!(
+            "compiler exit code: {}",
+            compilation.output.exit_code.unwrap_or(-1)
+        );
+        info!(
+            "stderr:\n{}",
+            stderr_with_timeout(&compilation.output, compilation.timeout)
+        );
+        info!("stdout:\n{}", compilation.output.stdout);
+    }
+
+    for result in &report.cases {
         match result.status {
-            TestStatus::Ac => info!("{}", "AC".green().bold()),
-            TestStatus::Wa => {
+            SampleCaseStatus::Ac => info!("{}", "AC".green().bold()),
+            SampleCaseStatus::Wa => {
                 warn!("{}", "Wrong Answer".red().bold());
                 info!("expected:\n{}", result.expected);
-                info!("got:\n{}", result.stdout);
+                info!("got:\n{}", result.output.stdout);
             }
-            TestStatus::Re => {
+            SampleCaseStatus::Re => {
                 warn!("{}", "Runtime Error".red().bold());
-                info!("exit code: {}", result.exit_code);
-                info!("stderr:\n{}", result.stderr);
+                info!("exit code: {}", result.output.exit_code.unwrap_or(-1));
+                info!(
+                    "stderr:\n{}",
+                    stderr_with_timeout(&result.output, result.timeout)
+                );
             }
-            TestStatus::Tle => {
+            SampleCaseStatus::Tle => {
                 warn!("{}", "Time Limit Exceeded".red().bold());
-                info!("stderr:\n{}", result.stderr);
+                info!(
+                    "stderr:\n{}",
+                    stderr_with_timeout(&result.output, result.timeout)
+                );
             }
-            TestStatus::Ole => {
+            SampleCaseStatus::Ole => {
                 warn!("{}", "Output Limit Exceeded".red().bold());
-                info!("stdout:\n{}", result.stdout);
-                info!("stderr:\n{}", result.stderr);
-            }
-            TestStatus::Ce => {
-                warn!("{}", "Compile Error".red().bold());
-                info!("compiler exit code: {}", result.exit_code);
-                info!("stderr:\n{}", result.stderr);
-                info!("stdout:\n{}", result.stdout);
+                info!("stdout:\n{}", result.output.stdout);
+                info!(
+                    "stderr:\n{}",
+                    stderr_with_timeout(&result.output, result.timeout)
+                );
             }
         }
     }
@@ -212,6 +247,34 @@ mod tests {
 
         let err = Cli::try_parse_from(["ackit", "--version"]).err().unwrap();
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
+
+    #[test]
+    fn adds_timeout_diagnostic_without_changing_raw_stderr() {
+        let output = CommandOutput {
+            success: false,
+            timed_out: true,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: "partial error".into(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+        assert_eq!(
+            stderr_with_timeout(&output, Duration::from_secs(1)),
+            "Command timed out after 1.000 seconds.\npartial error"
+        );
+        assert_eq!(output.stderr, "partial error");
+        assert_eq!(output.exit_code, None);
+
+        let output = CommandOutput {
+            stderr: String::new(),
+            ..output
+        };
+        assert_eq!(
+            stderr_with_timeout(&output, Duration::from_millis(2500)),
+            "Command timed out after 2.500 seconds."
+        );
     }
 
     #[test]

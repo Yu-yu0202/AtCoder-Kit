@@ -1,4 +1,4 @@
-use crate::application::sample::{TestResult, run_sample_tests};
+use crate::application::sample::run_sample_tests;
 use crate::client::AtCoderClient;
 use crate::workspace::command::{CommandInput, CommandRunner};
 use crate::workspace::problem::ProblemWorkspace;
@@ -73,8 +73,8 @@ pub(crate) async fn prepare_solution(
 ) -> Result<String> {
     run_pre_submit(workspace, runner).await?;
     if !no_test {
-        let results = run_sample_tests(workspace, runner).await?;
-        if results.iter().any(TestResult::is_failed) {
+        let report = run_sample_tests(workspace, runner).await?;
+        if !report.is_success() {
             bail!("Test failed. Please fix the issues and try submitting again.");
         }
     }
