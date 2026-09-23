@@ -1,4 +1,4 @@
-use crate::application::sample::{SampleCaseStatus, SampleTestReport};
+use crate::application::sample::{SampleCaseStatus, SampleTestReport, TimingBasis};
 use crate::application::{
     AppEvent, Application, LoginOutcome, SessionStatus, TemplateDetails, TemplateSummary,
 };
@@ -48,6 +48,9 @@ enum Commands {
         /// Run only the specified sample case (1-based)
         #[arg(long = "case")]
         case: Option<NonZeroUsize>,
+        /// Show detailed process resource metrics
+        #[arg(long)]
+        metrics: bool,
     },
     /// Submit the program
     #[command(visible_alias = "s")]
@@ -178,7 +181,7 @@ fn stderr_with_timeout(output: &CommandOutput, timeout: Duration) -> String {
     }
 }
 
-fn show_test_results(report: &SampleTestReport) {
+fn show_test_results(report: &SampleTestReport, metrics: bool) {
     if let Some(compilation) = report.compilation.as_ref()
         && !compilation.output.success
     {
@@ -195,6 +198,32 @@ fn show_test_results(report: &SampleTestReport) {
     }
 
     for result in &report.cases {
+        info!(
+            "Case {}: {:.3} s",
+            result.index,
+            report.case_time(result).as_secs_f64()
+        );
+        if metrics {
+            info!(
+                "  real: {:.3} s, CPU user: {}, CPU system: {}, peak memory: {}",
+                result.output.real_time.as_secs_f64(),
+                result
+                    .output
+                    .cpu_user_time
+                    .map(|time| format!("{:.3} s", time.as_secs_f64()))
+                    .unwrap_or_else(|| "unavailable".into()),
+                result
+                    .output
+                    .cpu_system_time
+                    .map(|time| format!("{:.3} s", time.as_secs_f64()))
+                    .unwrap_or_else(|| "unavailable".into()),
+                result
+                    .output
+                    .peak_memory_bytes
+                    .map(|bytes| format!("{bytes} bytes"))
+                    .unwrap_or_else(|| "unavailable".into())
+            );
+        }
         match result.status {
             SampleCaseStatus::Ac => info!("{}", "AC".green().bold()),
             SampleCaseStatus::Wa => {
@@ -226,6 +255,18 @@ fn show_test_results(report: &SampleTestReport) {
                 );
             }
         }
+    }
+    if let Some(summary) = report.timing_summary() {
+        let basis = match summary.basis {
+            TimingBasis::CpuOrReal => "max(CPU, real)",
+            TimingBasis::RealOnly => "real only",
+        };
+        info!(
+            "Time ({basis}, min/avg/max): {:.3} / {:.3} / {:.3} s",
+            summary.min.as_secs_f64(),
+            summary.avg.as_secs_f64(),
+            summary.max.as_secs_f64()
+        );
     }
 }
 
@@ -268,7 +309,9 @@ pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> 
                 .await?;
             let _ = outcome.path;
         }
-        Commands::Test { case } => show_test_results(&application.test(case).await?),
+        Commands::Test { case, metrics } => {
+            show_test_results(&application.test(case).await?, metrics)
+        }
         Commands::Submit { no_test } => {
             let outcome = application.submit(no_test, show_event).await?;
             info!("Submit URL: {}", outcome.submission_url);
@@ -381,8 +424,8 @@ mod tests {
     fn parses_test_submit_and_template_commands() {
         for subcommand in ["test", "t"] {
             assert_eq!(
-                command(&["ackit", subcommand, "--case", "2"]),
-                Commands::Test { case: NonZeroUsize::new(2) }
+                command(&["ackit", subcommand, "--case", "2", "--metrics"]),
+                Commands::Test { case: NonZeroUsize::new(2), metrics: true }
             );
             assert!(Cli::try_parse_from(["ackit", subcommand, "--case", "0"]).is_err());
             assert!(Cli::try_parse_from(["ackit", subcommand, "--case", "abc"]).is_err());
@@ -390,7 +433,8 @@ mod tests {
         assert_eq!(
             command(&["ackit", "t"]),
             Commands::Test {
-                case: None
+                case: None,
+                metrics: false
             }
         );
         assert_eq!(

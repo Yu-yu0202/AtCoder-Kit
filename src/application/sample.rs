@@ -29,7 +29,66 @@ pub(crate) struct SampleTestReport {
     pub(crate) cases: Vec<SampleCaseResult>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TimingBasis {
+    CpuOrReal,
+    RealOnly,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TimingSummary {
+    pub(crate) basis: TimingBasis,
+    pub(crate) min: Duration,
+    pub(crate) avg: Duration,
+    pub(crate) max: Duration,
+}
+
 impl SampleTestReport {
+    pub(crate) fn timing_basis(&self) -> TimingBasis {
+        if self.cases.iter().all(|case| {
+            case.output.cpu_user_time.is_some() && case.output.cpu_system_time.is_some()
+        }) {
+            TimingBasis::CpuOrReal
+        } else {
+            TimingBasis::RealOnly
+        }
+    }
+
+    pub(crate) fn case_time(&self, case: &SampleCaseResult) -> Duration {
+        match self.timing_basis() {
+            TimingBasis::CpuOrReal => case.output.real_time.max(
+                case.output
+                    .cpu_user_time
+                    .unwrap()
+                    .saturating_add(case.output.cpu_system_time.unwrap()),
+            ),
+            TimingBasis::RealOnly => case.output.real_time,
+        }
+    }
+
+    pub(crate) fn timing_summary(&self) -> Option<TimingSummary> {
+        let mut times = self.cases.iter().map(|case| self.case_time(case));
+        let first = times.next()?;
+        let (mut min, mut max, mut total, mut count) = (first, first, first.as_nanos(), 1_u128);
+        for time in times {
+            min = min.min(time);
+            max = max.max(time);
+            total = total.saturating_add(time.as_nanos());
+            count += 1;
+        }
+        let avg_nanos = total / count;
+        let avg = Duration::new(
+            (avg_nanos / 1_000_000_000) as u64,
+            (avg_nanos % 1_000_000_000) as u32,
+        );
+        Some(TimingSummary {
+            basis: self.timing_basis(),
+            min,
+            avg,
+            max,
+        })
+    }
+
     pub(crate) fn compile_failed(&self) -> bool {
         self.compilation
             .as_ref()
@@ -354,6 +413,58 @@ mod tests {
         assert!(empty_runner.calls.lock().unwrap().is_empty());
     }
 
+    #[test]
+    fn timing_uses_one_basis_for_all_cases_and_includes_failures() {
+        let mut first = output(true, "");
+        first.real_time = Duration::from_millis(5);
+        first.cpu_user_time = Some(Duration::from_millis(8));
+        first.cpu_system_time = Some(Duration::from_millis(2));
+        let mut second = output(false, "");
+        second.real_time = Duration::from_millis(20);
+        second.cpu_user_time = Some(Duration::from_millis(1));
+        second.cpu_system_time = Some(Duration::from_millis(2));
+        let make_report = |first: CommandOutput, second: CommandOutput| SampleTestReport {
+            compilation: None,
+            cases: vec![
+                SampleCaseResult {
+                    index: NonZeroUsize::new(1).unwrap(),
+                    status: SampleCaseStatus::Ac,
+                    expected: String::new(),
+                    output: first,
+                    timeout: Duration::ZERO,
+                },
+                SampleCaseResult {
+                    index: NonZeroUsize::new(2).unwrap(),
+                    status: SampleCaseStatus::Wa,
+                    expected: String::new(),
+                    output: second,
+                    timeout: Duration::ZERO,
+                },
+            ],
+        };
+        let report = make_report(first.clone(), second.clone());
+        assert_eq!(
+            report.timing_summary(),
+            Some(TimingSummary {
+                basis: TimingBasis::CpuOrReal,
+                min: Duration::from_millis(10),
+                avg: Duration::from_millis(15),
+                max: Duration::from_millis(20),
+            })
+        );
+        second.cpu_system_time = None;
+        let report = make_report(first, second);
+        assert_eq!(report.case_time(&report.cases[0]), Duration::from_millis(5));
+        assert_eq!(
+            report.timing_summary(),
+            Some(TimingSummary {
+                basis: TimingBasis::RealOnly,
+                min: Duration::from_millis(5),
+                avg: Duration::from_millis(12) + Duration::from_micros(500),
+                max: Duration::from_millis(20),
+            })
+        );
+    }
     #[tokio::test]
     async fn empty_samples_reject_cli_test_without_changing_submit_path() {
         let (temp, _) = workspace(None);
