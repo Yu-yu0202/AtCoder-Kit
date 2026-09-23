@@ -2,7 +2,7 @@ use crate::workspace::process_tree::ProcessTree;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::io::{Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -42,6 +42,7 @@ pub(crate) enum CommandInput {
     Inherit,
     Null,
     Bytes(Vec<u8>),
+    File(PathBuf),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,6 +69,13 @@ pub(crate) trait CommandRunner: Send + Sync {
         input: CommandInput,
         timeout: Duration,
     ) -> Result<CommandOutput>;
+
+    async fn run_passthrough(
+        &self,
+        command: &CommandSpec,
+        cwd: &Path,
+        input: CommandInput,
+    ) -> Result<CommandOutput>;
 }
 
 #[derive(Default)]
@@ -82,12 +90,36 @@ impl CommandRunner for SystemCommandRunner {
         input: CommandInput,
         timeout: Duration,
     ) -> Result<CommandOutput> {
+        self.run_with_output(command, cwd, input, Some(timeout), false)
+            .await
+    }
+
+    async fn run_passthrough(
+        &self,
+        command: &CommandSpec,
+        cwd: &Path,
+        input: CommandInput,
+    ) -> Result<CommandOutput> {
+        self.run_with_output(command, cwd, input, None, true).await
+    }
+}
+
+impl SystemCommandRunner {
+    async fn run_with_output(
+        &self,
+        command: &CommandSpec,
+        cwd: &Path,
+        input: CommandInput,
+        timeout: Option<Duration>,
+        passthrough: bool,
+    ) -> Result<CommandOutput> {
         let mut process = Command::new(&command.program);
-        process
-            .args(&command.args)
-            .current_dir(cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        process.args(&command.args).current_dir(cwd);
+        if passthrough {
+            process.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        } else {
+            process.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
 
         match input {
             CommandInput::Inherit => {
@@ -107,7 +139,21 @@ impl CommandRunner for SystemCommandRunner {
                     .context("Failed to rewind temporary command input.")?;
                 process.stdin(Stdio::from(input_file));
             }
+            CommandInput::File(path) => {
+                let input_file = std::fs::File::open(&path)
+                    .with_context(|| format!("Failed to open input file '{}'.", path.display()))?;
+                process.stdin(Stdio::from(input_file));
+            }
         }
+        #[cfg(unix)]
+        let mut interrupt_signal = if passthrough {
+            Some(
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                    .context("Failed to listen for Ctrl+C.")?,
+            )
+        } else {
+            None
+        };
         let mut process_tree = ProcessTree::prepare(&mut process)?;
 
         let mut child = process
@@ -119,31 +165,59 @@ impl CommandRunner for SystemCommandRunner {
             let _ = child.wait();
             return Err(error).context("Failed to isolate command process tree.");
         }
-        let stdout = child
-            .stdout
-            .take()
-            .context("Failed to capture command stdout.")?;
-        let stderr = child
-            .stderr
-            .take()
-            .context("Failed to capture command stderr.")?;
-        let stdout = tokio::process::ChildStdout::from_std(stdout)
-            .context("Failed to capture command stdout asynchronously.")?;
-        let stderr = tokio::process::ChildStderr::from_std(stderr)
-            .context("Failed to capture command stderr asynchronously.")?;
+        #[cfg(unix)]
+        if passthrough && let Err(error) = process_tree.make_foreground() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error).context("Failed to give terminal to command.");
+        }
         let stdout_capture = Arc::new(Mutex::new(Capture::default()));
         let stderr_capture = Arc::new(Mutex::new(Capture::default()));
         let mut capture_tasks = JoinSet::new();
-        capture_tasks.spawn(drain_capture(stdout, Arc::clone(&stdout_capture)));
-        capture_tasks.spawn(drain_capture(stderr, Arc::clone(&stderr_capture)));
+        if !passthrough {
+            let stdout = child
+                .stdout
+                .take()
+                .context("Failed to capture command stdout.")?;
+            let stderr = child
+                .stderr
+                .take()
+                .context("Failed to capture command stderr.")?;
+            let stdout = tokio::process::ChildStdout::from_std(stdout)
+                .context("Failed to capture command stdout asynchronously.")?;
+            let stderr = tokio::process::ChildStderr::from_std(stderr)
+                .context("Failed to capture command stderr asynchronously.")?;
+            capture_tasks.spawn(drain_capture(stdout, Arc::clone(&stdout_capture)));
+            capture_tasks.spawn(drain_capture(stderr, Arc::clone(&stderr_capture)));
+        }
 
         let mut wait_task = tokio::task::spawn_blocking(move || wait_for_child(child));
-        let (status, usage, timed_out) = match tokio::time::timeout(timeout, &mut wait_task).await {
-            Ok(result) => {
+        let wait_result = match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, &mut wait_task).await.ok(),
+            None => {
+                #[cfg(unix)]
+                {
+                    tokio::select! {
+                        result = &mut wait_task => Some(result),
+                        _ = interrupt_signal.as_mut().expect("passthrough has SIGINT listener").recv() => {
+                            process_tree.terminate().context("Failed to stop interrupted command process tree.")?;
+                            wait_task.await.context("Failed to join interrupted command wait task.")??;
+                            anyhow::bail!("Program interrupted by Ctrl+C.");
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    Some((&mut wait_task).await)
+                }
+            }
+        };
+        let (status, usage, timed_out) = match wait_result {
+            Some(result) => {
                 let (status, usage) = result.context("Failed to join command wait task.")??;
                 (Some(status), usage, false)
             }
-            Err(_) => {
+            None => {
                 process_tree
                     .terminate()
                     .context("Failed to stop timed-out command process tree.")?;
@@ -372,6 +446,144 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn sigint_reaps_redirected_passthrough_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_file = temp.path().join("child.pid");
+        let mut parent = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "workspace::command::tests::interrupt_parent_helper",
+                "--nocapture",
+            ])
+            .env("ACKIT_INTERRUPT_PID_FILE", &pid_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let child_pid: i32 = loop {
+            if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+                break pid.parse().unwrap();
+            }
+            assert!(Instant::now() < deadline, "child did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(unsafe { libc::kill(parent.id() as i32, libc::SIGINT) }, 0);
+        let status = loop {
+            if let Some(status) = parent.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                parent.kill().unwrap();
+                parent.wait().unwrap();
+                panic!("runner did not exit after SIGINT");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "runner failed: {status}");
+        assert_eq!(unsafe { libc::kill(child_pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn interrupt_parent_helper() {
+        let command = CommandSpec::from_words(vec![
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--ignored".into(),
+            "--exact".into(),
+            "workspace::command::tests::interrupt_child_helper".into(),
+            "--nocapture".into(),
+        ])
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(SystemCommandRunner.run_passthrough(
+                &command,
+                &std::env::current_dir().unwrap(),
+                CommandInput::Null,
+            ))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Program interrupted by Ctrl+C.");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn interrupt_child_helper() {
+        let pid_file = std::env::var_os("ACKIT_INTERRUPT_PID_FILE").unwrap();
+        std::fs::write(pid_file, std::process::id().to_string()).unwrap();
+        std::thread::sleep(Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn passthrough_waits_beyond_a_sample_time_limit() {
+        let executable = std::env::current_exe().unwrap();
+        let command = CommandSpec::from_words(vec![
+            executable.to_string_lossy().into_owned(),
+            "--ignored".into(),
+            "--exact".into(),
+            "workspace::command::tests::slow_success_helper".into(),
+            "--nocapture".into(),
+        ])
+        .unwrap();
+        let output = SystemCommandRunner
+            .run_passthrough(
+                &command,
+                &std::env::current_dir().unwrap(),
+                CommandInput::Null,
+            )
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert!(!output.timed_out);
+        assert!(output.real_time >= Duration::from_millis(150));
+    }
+
+    #[test]
+    #[ignore]
+    fn slow_success_helper() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn passthrough_uses_file_stdin_without_capturing_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let input_path = temp.path().join("input.txt");
+        std::fs::write(&input_path, b"file input").unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let command = CommandSpec::from_words(vec![
+            executable.to_string_lossy().into_owned(),
+            "--ignored".into(),
+            "--exact".into(),
+            "workspace::command::tests::command_helper".into(),
+            "--nocapture".into(),
+        ])
+        .unwrap();
+        let output = SystemCommandRunner
+            .run_passthrough(&command, temp.path(), CommandInput::File(input_path))
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+        assert!(!output.stdout_truncated);
+    }
+
     #[tokio::test]
     async fn system_runner_stops_a_timed_out_process_tree() {
         let temp = tempfile::tempdir().unwrap();
@@ -440,6 +652,215 @@ mod tests {
         process_tree.attach(&child).unwrap();
         assert!(child.wait().unwrap().success());
         assert!(temp.path().join("command-started").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interactive_stdin_returns_terminal_to_invoking_shell() {
+        let executable = std::env::current_exe().unwrap();
+        let nested = shell_words::join([
+            executable.to_string_lossy().into_owned(),
+            "--ignored".into(),
+            "--exact".into(),
+            "workspace::command::tests::pty_input_helper".into(),
+            "--nocapture".into(),
+        ]);
+        let shell = format!("{nested}; read after; printf 'shell=%s\\n' \"$after\"");
+        let mut script = match Command::new("timeout")
+            .args([
+                "-k",
+                "1s",
+                "8s",
+                "script",
+                "-q",
+                "-e",
+                "-c",
+                &shell,
+                "/dev/null",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(script) => script,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("Failed to start PTY test: {error}"),
+        };
+        script
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"first\nsecond\n")
+            .unwrap();
+        let output = script.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "stdout: {stdout}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("stdin=first"), "{stdout}");
+        assert!(stdout.contains("shell=second"), "{stdout}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn file_input_with_tostop_returns_terminal_to_invoking_shell() {
+        let executable = std::env::current_exe().unwrap();
+        let nested = shell_words::join([
+            executable.to_string_lossy().into_owned(),
+            "--ignored".into(),
+            "--exact".into(),
+            "workspace::command::tests::pty_input_helper".into(),
+            "--nocapture".into(),
+        ]);
+        let shell = format!(
+            "stty tostop; ACKIT_PTY_FILE_INPUT=1 {nested}; read after; printf 'shell=%s\\n' \"$after\""
+        );
+        let mut script = match Command::new("timeout")
+            .args([
+                "-k",
+                "1s",
+                "8s",
+                "script",
+                "-q",
+                "-e",
+                "-c",
+                &shell,
+                "/dev/null",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(script) => script,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("Failed to start PTY test: {error}"),
+        };
+        script.stdin.take().unwrap().write_all(b"second\n").unwrap();
+        let output = script.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "stdout: {stdout}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("stdin=file input"), "{stdout}");
+        assert!(stdout.contains("shell=second"), "{stdout}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timed_out_command_returns_terminal_to_invoking_shell() {
+        let executable = std::env::current_exe().unwrap();
+        let nested = shell_words::join([
+            executable.to_string_lossy().into_owned(),
+            "--ignored".into(),
+            "--exact".into(),
+            "workspace::command::tests::pty_input_helper".into(),
+            "--nocapture".into(),
+        ]);
+        let shell =
+            format!("ACKIT_PTY_TIMEOUT=1 {nested}; read after; printf 'shell=%s\\n' \"$after\"");
+        let mut script = match Command::new("timeout")
+            .args([
+                "-k",
+                "1s",
+                "8s",
+                "script",
+                "-q",
+                "-e",
+                "-c",
+                &shell,
+                "/dev/null",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(script) => script,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("Failed to start PTY test: {error}"),
+        };
+        script.stdin.take().unwrap().write_all(b"after\n").unwrap();
+        let output = script.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "stdout: {stdout}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("shell=after"), "{stdout}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn pty_input_helper() {
+        let executable = std::env::current_exe().unwrap();
+        let timed_out = std::env::var_os("ACKIT_PTY_TIMEOUT").is_some();
+        let helper = if timed_out {
+            "workspace::command::tests::pty_slow_helper"
+        } else {
+            "workspace::command::tests::pty_reader_helper"
+        };
+        let command = CommandSpec::from_words(vec![
+            executable.to_string_lossy().into_owned(),
+            "--ignored".into(),
+            "--exact".into(),
+            helper.into(),
+            "--nocapture".into(),
+        ])
+        .unwrap();
+        let file = if std::env::var_os("ACKIT_PTY_FILE_INPUT").is_some() {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), b"file input\n").unwrap();
+            Some(file)
+        } else {
+            None
+        };
+        let input = file
+            .as_ref()
+            .map(|file| CommandInput::File(file.path().to_path_buf()))
+            .unwrap_or(CommandInput::Inherit);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let timeout = timed_out.then_some(Duration::from_millis(100));
+        let output = runtime
+            .block_on(SystemCommandRunner.run_with_output(
+                &command,
+                &std::env::current_dir().unwrap(),
+                input,
+                timeout,
+                true,
+            ))
+            .unwrap();
+        assert_eq!(output.timed_out, timed_out);
+        if !timed_out {
+            assert!(output.success, "child exit: {:?}", output.exit_code);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn pty_slow_helper() {
+        std::thread::sleep(Duration::from_secs(10));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn pty_reader_helper() {
+        use std::io::BufRead;
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line).unwrap();
+        println!("stdin={}", line.trim_end());
     }
 
     #[test]

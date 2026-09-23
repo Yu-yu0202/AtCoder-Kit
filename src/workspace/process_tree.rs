@@ -4,8 +4,61 @@ mod imp {
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
 
+    struct ForegroundTerminal {
+        fd: libc::c_int,
+        previous_group: libc::pid_t,
+    }
+
+    impl Drop for ForegroundTerminal {
+        fn drop(&mut self) {
+            let _ = set_foreground_group(self.fd, self.previous_group);
+        }
+    }
+
+    struct BlockSigttou(libc::sigset_t);
+
+    impl BlockSigttou {
+        fn new() -> Result<Self> {
+            let mut blocked = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+            if unsafe { libc::sigemptyset(&mut blocked) } != 0
+                || unsafe { libc::sigaddset(&mut blocked, libc::SIGTTOU) } != 0
+            {
+                return Err(std::io::Error::last_os_error())
+                    .context("Failed to prepare SIGTTOU mask.");
+            }
+            let mut previous = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            let code =
+                unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, previous.as_mut_ptr()) };
+            if code != 0 {
+                return Err(std::io::Error::from_raw_os_error(code))
+                    .context("Failed to block SIGTTOU.");
+            }
+            Ok(Self(unsafe { previous.assume_init() }))
+        }
+    }
+
+    impl Drop for BlockSigttou {
+        fn drop(&mut self) {
+            unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut()) };
+        }
+    }
+
+    fn set_foreground_group(fd: libc::c_int, group: libc::pid_t) -> Result<()> {
+        let _mask = BlockSigttou::new()?;
+        loop {
+            if unsafe { libc::tcsetpgrp(fd, group) } == 0 {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error).context("Failed to set foreground terminal process group.");
+            }
+        }
+    }
+
     pub(in crate::workspace) struct ProcessTree {
         process_group: Option<i32>,
+        terminal: Option<ForegroundTerminal>,
     }
 
     impl ProcessTree {
@@ -13,6 +66,7 @@ mod imp {
             command.process_group(0);
             Ok(Self {
                 process_group: None,
+                terminal: None,
             })
         }
 
@@ -23,6 +77,49 @@ mod imp {
                     .try_into()
                     .context("Command process ID is too large for a Unix process group.")?,
             );
+            Ok(())
+        }
+
+        pub(in crate::workspace) fn make_foreground(&mut self) -> Result<()> {
+            let Some((fd, previous_group)) =
+                [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                    .into_iter()
+                    .find_map(|fd| {
+                        if unsafe { libc::isatty(fd) } != 1 {
+                            return None;
+                        }
+                        let group = unsafe { libc::tcgetpgrp(fd) };
+                        (group >= 0).then_some((fd, group))
+                    })
+            else {
+                return Ok(());
+            };
+            let group = self
+                .process_group
+                .context("Command process group is not attached.")?;
+            if previous_group != unsafe { libc::getpgrp() } {
+                return Ok(());
+            }
+            if let Err(error) = set_foreground_group(fd, group) {
+                // A short-lived command can exit before the handoff. Its exit status
+                // is still collected by the command runner.
+                if unsafe { libc::kill(-group, 0) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    return Ok(());
+                }
+                return Err(error);
+            }
+            self.terminal = Some(ForegroundTerminal { fd, previous_group });
+            // The child may have attempted to read before the handoff and stopped
+            // with SIGTTIN. Resume the whole group after making it foreground.
+            if unsafe { libc::kill(-group, libc::SIGCONT) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error)
+                        .context("Failed to resume foreground command process group.");
+                }
+            }
             Ok(())
         }
 
@@ -56,6 +153,7 @@ mod imp {
     impl Drop for ProcessTree {
         fn drop(&mut self) {
             let _ = self.terminate();
+            self.terminal.take();
         }
     }
 }

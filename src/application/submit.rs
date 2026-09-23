@@ -123,6 +123,15 @@ mod tests {
             self.calls.lock().unwrap().push(command.words());
             Ok(self.outputs.lock().unwrap().pop_front().unwrap())
         }
+
+        async fn run_passthrough(
+            &self,
+            _command: &CommandSpec,
+            _cwd: &Path,
+            _input: CommandInput,
+        ) -> Result<CommandOutput> {
+            unreachable!("submit tests do not use passthrough execution")
+        }
     }
 
     impl FakeRunner {
