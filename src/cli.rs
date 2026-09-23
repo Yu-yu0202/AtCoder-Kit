@@ -1,6 +1,6 @@
-use crate::application::sample::{SampleCaseStatus, SampleTestReport};
+use crate::application::sample::{SampleCaseStatus, SampleTestReport, TimingBasis};
 use crate::application::{
-    AppEvent, Application, LoginOutcome, SessionStatus, TemplateDetails, TemplateSummary,
+    AppEvent, Application, LoginOutcome, RunReport, SessionStatus, TemplateDetails, TemplateSummary,
 };
 use crate::workspace::command::CommandOutput;
 use crate::workspace::template::NewTemplate;
@@ -8,6 +8,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use log::{info, warn};
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -43,7 +45,20 @@ enum Commands {
     },
     /// Test the program with sample cases
     #[command(visible_alias = "t")]
-    Test,
+    Test {
+        /// Run only the specified sample case (1-based)
+        #[arg(long = "case")]
+        case: Option<NonZeroUsize>,
+        /// Show detailed process resource metrics
+        #[arg(long)]
+        metrics: bool,
+    },
+    /// Compile and run the current solution
+    Run {
+        /// Read program stdin from this file
+        #[arg(long)]
+        input: Option<PathBuf>,
+    },
     /// Submit the program
     #[command(visible_alias = "s")]
     Submit {
@@ -173,7 +188,7 @@ fn stderr_with_timeout(output: &CommandOutput, timeout: Duration) -> String {
     }
 }
 
-fn show_test_results(report: &SampleTestReport) {
+fn show_test_results(report: &SampleTestReport, metrics: bool) {
     if let Some(compilation) = report.compilation.as_ref()
         && !compilation.output.success
     {
@@ -190,6 +205,32 @@ fn show_test_results(report: &SampleTestReport) {
     }
 
     for result in &report.cases {
+        info!(
+            "Case {}: {:.3} s",
+            result.index,
+            report.case_time(result).as_secs_f64()
+        );
+        if metrics {
+            info!(
+                "  real: {:.3} s, CPU user: {}, CPU system: {}, peak memory: {}",
+                result.output.real_time.as_secs_f64(),
+                result
+                    .output
+                    .cpu_user_time
+                    .map(|time| format!("{:.3} s", time.as_secs_f64()))
+                    .unwrap_or_else(|| "unavailable".into()),
+                result
+                    .output
+                    .cpu_system_time
+                    .map(|time| format!("{:.3} s", time.as_secs_f64()))
+                    .unwrap_or_else(|| "unavailable".into()),
+                result
+                    .output
+                    .peak_memory_bytes
+                    .map(|bytes| format!("{bytes} bytes"))
+                    .unwrap_or_else(|| "unavailable".into())
+            );
+        }
         match result.status {
             SampleCaseStatus::Ac => info!("{}", "AC".green().bold()),
             SampleCaseStatus::Wa => {
@@ -222,6 +263,51 @@ fn show_test_results(report: &SampleTestReport) {
             }
         }
     }
+    if let Some(summary) = report.timing_summary() {
+        let basis = match summary.basis {
+            TimingBasis::CpuOrReal => "max(CPU, real)",
+            TimingBasis::RealOnly => "real only",
+        };
+        info!(
+            "Time ({basis}, min/avg/max): {:.3} / {:.3} / {:.3} s",
+            summary.min.as_secs_f64(),
+            summary.avg.as_secs_f64(),
+            summary.max.as_secs_f64()
+        );
+    }
+}
+
+fn show_run_result(report: RunReport) -> Result<()> {
+    if let Some(compilation) = report.compilation {
+        eprint!("{}", compilation.output.stderr);
+        eprint!("{}", compilation.output.stdout);
+        if compilation.output.timed_out {
+            anyhow::bail!(
+                "Compilation timed out after {:.3} seconds.",
+                compilation.timeout.as_secs_f64()
+            );
+        }
+        if !compilation.output.success {
+            anyhow::bail!(
+                "Compilation failed (exit code: {}).",
+                compilation
+                    .output
+                    .exit_code
+                    .map_or_else(|| "unavailable".into(), |code| code.to_string())
+            );
+        }
+    }
+    let execution = report
+        .execution
+        .expect("successful compilation must execute program");
+    if !execution.success {
+        match execution.exit_code {
+            Some(code) => anyhow::bail!("Program exited with code {code}."),
+            None => anyhow::bail!("Program terminated (exit code unavailable)."),
+        }
+    }
+    info!("Program exited with code 0.");
+    Ok(())
 }
 
 pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> {
@@ -263,7 +349,10 @@ pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> 
                 .await?;
             let _ = outcome.path;
         }
-        Commands::Test => show_test_results(&application.test().await?),
+        Commands::Test { case, metrics } => {
+            show_test_results(&application.test(case).await?, metrics)
+        }
+        Commands::Run { input } => show_run_result(application.run(input).await?)?,
         Commands::Submit { no_test } => {
             let outcome = application.submit(no_test, show_event).await?;
             info!("Submit URL: {}", outcome.submission_url);
@@ -309,6 +398,38 @@ mod tests {
     }
 
     #[test]
+    fn run_reports_nonzero_exit() {
+        let output = CommandOutput {
+            success: false,
+            timed_out: false,
+            exit_code: Some(7),
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            real_time: Duration::ZERO,
+            cpu_user_time: None,
+            cpu_system_time: None,
+            peak_memory_bytes: None,
+        };
+        let error = show_run_result(RunReport {
+            compilation: None,
+            execution: Some(output.clone()),
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Program exited with code 7.");
+        let error = show_run_result(RunReport {
+            compilation: None,
+            execution: Some(CommandOutput {
+                exit_code: None,
+                ..output
+            }),
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Program terminated (exit code unavailable).");
+    }
+
+    #[test]
     fn parses_version() {
         let err = Cli::try_parse_from(["ackit", "-V"]).err().unwrap();
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
@@ -323,6 +444,10 @@ mod tests {
             success: false,
             timed_out: true,
             exit_code: None,
+            real_time: Duration::ZERO,
+            cpu_user_time: None,
+            cpu_system_time: None,
+            peak_memory_bytes: None,
             stdout: String::new(),
             stderr: "partial error".into(),
             stdout_truncated: false,
@@ -356,7 +481,7 @@ mod tests {
             }
         );
         assert_eq!(
-            Cli::try_parse_from(&["ackit", "d", "abc999", "-t", "cpp", "--no-template"])
+            Cli::try_parse_from(["ackit", "d", "abc999", "-t", "cpp", "--no-template"])
                 .err()
                 .unwrap()
                 .kind(),
@@ -370,7 +495,31 @@ mod tests {
 
     #[test]
     fn parses_test_submit_and_template_commands() {
-        assert_eq!(command(&["ackit", "t"]), Commands::Test);
+        assert_eq!(command(&["ackit", "run"]), Commands::Run { input: None });
+        assert_eq!(
+            command(&["ackit", "run", "--input", "sample.txt"]),
+            Commands::Run {
+                input: Some(PathBuf::from("sample.txt"))
+            }
+        );
+        for subcommand in ["test", "t"] {
+            assert_eq!(
+                command(&["ackit", subcommand, "--case", "2", "--metrics"]),
+                Commands::Test {
+                    case: NonZeroUsize::new(2),
+                    metrics: true
+                }
+            );
+            assert!(Cli::try_parse_from(["ackit", subcommand, "--case", "0"]).is_err());
+            assert!(Cli::try_parse_from(["ackit", subcommand, "--case", "abc"]).is_err());
+        }
+        assert_eq!(
+            command(&["ackit", "t"]),
+            Commands::Test {
+                case: None,
+                metrics: false
+            }
+        );
         assert_eq!(
             command(&["ackit", "s", "-n"]),
             Commands::Submit { no_test: true }
