@@ -1,10 +1,9 @@
+use crate::application::program::{CompileResult, compile_program, execute_program};
 use crate::workspace::command::{CommandInput, CommandOutput, CommandRunner};
 use crate::workspace::problem::ProblemWorkspace;
 use anyhow::Result;
 use std::num::NonZeroUsize;
 use std::time::Duration;
-
-const COMPILE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SampleCaseStatus {
@@ -13,12 +12,6 @@ pub(crate) enum SampleCaseStatus {
     Re,
     Tle,
     Ole,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CompileResult {
-    pub(crate) output: CommandOutput,
-    pub(crate) timeout: Duration,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,44 +49,28 @@ pub(crate) async fn run_sample_tests(
     workspace: &ProblemWorkspace,
     runner: &dyn CommandRunner,
 ) -> Result<SampleTestReport> {
-    let config = workspace.template();
-
-    let compilation = if let Some(compile) = &config.compile_command {
-        let output = runner
-            .run(
-                compile,
-                workspace.problem_dir(),
-                CommandInput::Inherit,
-                COMPILE_TIMEOUT,
-            )
-            .await?;
-        let compilation = CompileResult {
-            output,
-            timeout: COMPILE_TIMEOUT,
-        };
-        if !compilation.output.success {
-            return Ok(SampleTestReport {
-                compilation: Some(compilation),
-                cases: Vec::new(),
-            });
-        }
-        Some(compilation)
-    } else {
-        None
-    };
+    let compilation = compile_program(workspace, runner).await?;
+    if compilation
+        .as_ref()
+        .is_some_and(|compilation| !compilation.output.success)
+    {
+        return Ok(SampleTestReport {
+            compilation,
+            cases: Vec::new(),
+        });
+    }
 
     let mut cases = Vec::new();
     for sample in &workspace.problem().sample_cases {
         let timeout = Duration::from_millis(workspace.problem().time_limit_msecs as u64)
             .saturating_add(Duration::from_secs(2));
-        let output = runner
-            .run(
-                &config.exec_command,
-                workspace.problem_dir(),
-                CommandInput::Bytes(sample.input.as_bytes().to_vec()),
-                timeout,
-            )
-            .await?;
+        let output = execute_program(
+            workspace,
+            runner,
+            CommandInput::Bytes(sample.input.as_bytes().to_vec()),
+            timeout,
+        )
+        .await?;
         let status = if output.timed_out {
             SampleCaseStatus::Tle
         } else if output.stdout_truncated || output.stderr_truncated {
@@ -251,13 +228,13 @@ mod tests {
         assert!(!report.is_success());
         assert!(report.cases.is_empty());
         let compilation = report.compilation.as_ref().unwrap();
-        assert_eq!(compilation.timeout, COMPILE_TIMEOUT);
+        assert_eq!(compilation.timeout, Duration::from_secs(120));
         assert_eq!(compilation.output, compile_output);
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].command, ["compiler", "main.rs"]);
         assert_eq!(calls[0].input, CommandInput::Inherit);
-        assert_eq!(calls[0].timeout, COMPILE_TIMEOUT);
+        assert_eq!(calls[0].timeout, Duration::from_secs(120));
     }
 
     #[tokio::test]
@@ -287,7 +264,7 @@ mod tests {
         let compiled = SampleTestReport {
             compilation: Some(CompileResult {
                 output: output(true, ""),
-                timeout: COMPILE_TIMEOUT,
+                timeout: Duration::from_secs(120),
             }),
             cases: Vec::new(),
         };
