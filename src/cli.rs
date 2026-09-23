@@ -1,6 +1,6 @@
 use crate::application::sample::{SampleCaseStatus, SampleTestReport, TimingBasis};
 use crate::application::{
-    AppEvent, Application, LoginOutcome, SessionStatus, TemplateDetails, TemplateSummary,
+    AppEvent, Application, LoginOutcome, RunReport, SessionStatus, TemplateDetails, TemplateSummary,
 };
 use crate::workspace::command::CommandOutput;
 use crate::workspace::template::NewTemplate;
@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use log::{info, warn};
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -51,6 +52,12 @@ enum Commands {
         /// Show detailed process resource metrics
         #[arg(long)]
         metrics: bool,
+    },
+    /// Compile and run the current solution
+    Run {
+        /// Read program stdin from this file
+        #[arg(long)]
+        input: Option<PathBuf>,
     },
     /// Submit the program
     #[command(visible_alias = "s")]
@@ -270,6 +277,39 @@ fn show_test_results(report: &SampleTestReport, metrics: bool) {
     }
 }
 
+fn show_run_result(report: RunReport) -> Result<()> {
+    if let Some(compilation) = report.compilation {
+        eprint!("{}", compilation.output.stderr);
+        eprint!("{}", compilation.output.stdout);
+        if compilation.output.timed_out {
+            anyhow::bail!(
+                "Compilation timed out after {:.3} seconds.",
+                compilation.timeout.as_secs_f64()
+            );
+        }
+        if !compilation.output.success {
+            anyhow::bail!(
+                "Compilation failed (exit code: {}).",
+                compilation
+                    .output
+                    .exit_code
+                    .map_or_else(|| "unavailable".into(), |code| code.to_string())
+            );
+        }
+    }
+    let execution = report
+        .execution
+        .expect("successful compilation must execute program");
+    if !execution.success {
+        match execution.exit_code {
+            Some(code) => anyhow::bail!("Program exited with code {code}."),
+            None => anyhow::bail!("Program terminated (exit code unavailable)."),
+        }
+    }
+    info!("Program exited with code 0.");
+    Ok(())
+}
+
 pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> {
     match cli.command {
         Commands::Login { overwrite } => match application.login(overwrite, show_event).await? {
@@ -312,6 +352,7 @@ pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> 
         Commands::Test { case, metrics } => {
             show_test_results(&application.test(case).await?, metrics)
         }
+        Commands::Run { input } => show_run_result(application.run(input).await?)?,
         Commands::Submit { no_test } => {
             let outcome = application.submit(no_test, show_event).await?;
             info!("Submit URL: {}", outcome.submission_url);
@@ -354,6 +395,38 @@ mod tests {
 
     fn command(args: &[&str]) -> Commands {
         Cli::try_parse_from(args).unwrap().command
+    }
+
+    #[test]
+    fn run_reports_nonzero_exit() {
+        let output = CommandOutput {
+            success: false,
+            timed_out: false,
+            exit_code: Some(7),
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            real_time: Duration::ZERO,
+            cpu_user_time: None,
+            cpu_system_time: None,
+            peak_memory_bytes: None,
+        };
+        let error = show_run_result(RunReport {
+            compilation: None,
+            execution: Some(output.clone()),
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Program exited with code 7.");
+        let error = show_run_result(RunReport {
+            compilation: None,
+            execution: Some(CommandOutput {
+                exit_code: None,
+                ..output
+            }),
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Program terminated (exit code unavailable).");
     }
 
     #[test]
@@ -422,10 +495,20 @@ mod tests {
 
     #[test]
     fn parses_test_submit_and_template_commands() {
+        assert_eq!(command(&["ackit", "run"]), Commands::Run { input: None });
+        assert_eq!(
+            command(&["ackit", "run", "--input", "sample.txt"]),
+            Commands::Run {
+                input: Some(PathBuf::from("sample.txt"))
+            }
+        );
         for subcommand in ["test", "t"] {
             assert_eq!(
                 command(&["ackit", subcommand, "--case", "2", "--metrics"]),
-                Commands::Test { case: NonZeroUsize::new(2), metrics: true }
+                Commands::Test {
+                    case: NonZeroUsize::new(2),
+                    metrics: true
+                }
             );
             assert!(Cli::try_parse_from(["ackit", subcommand, "--case", "0"]).is_err());
             assert!(Cli::try_parse_from(["ackit", subcommand, "--case", "abc"]).is_err());

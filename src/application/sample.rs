@@ -1,4 +1,6 @@
-use crate::application::program::{CompileResult, compile_program, execute_program};
+use crate::application::program::{
+    CompileResult, compile_program, execute_program, execution_timeout,
+};
 use crate::workspace::command::{CommandInput, CommandOutput, CommandRunner};
 use crate::workspace::problem::ProblemWorkspace;
 use anyhow::{Result, bail};
@@ -155,8 +157,7 @@ async fn run_sample_tests_impl(
         if selected_case.is_some_and(|selected| selected != index) {
             continue;
         }
-        let timeout = Duration::from_millis(workspace.problem().time_limit_msecs as u64)
-            .saturating_add(Duration::from_secs(2));
+        let timeout = execution_timeout(workspace);
         let output = execute_program(
             workspace,
             runner,

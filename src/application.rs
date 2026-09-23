@@ -2,13 +2,15 @@ mod program;
 pub(crate) mod sample;
 mod submit;
 
+pub(crate) use crate::application::program::RunReport;
+use crate::application::program::run_program;
 use crate::application::sample::{SampleTestReport, run_sample_tests_selected};
 use crate::application::submit::{prepare_solution, submit_prepared_solution};
 use crate::client::AtCoderClient;
 use crate::client::auth::{prompt_revel_session, verify_current_session};
 use crate::client::cookie::Cookie;
 use crate::validation::validate_atcoder_identifier;
-use crate::workspace::command::SystemCommandRunner;
+use crate::workspace::command::{CommandInput, SystemCommandRunner};
 use crate::workspace::contest::save_contest_to;
 use crate::workspace::problem::ProblemWorkspace;
 use crate::workspace::template::{
@@ -110,6 +112,14 @@ impl Application {
     ) -> Result<SampleTestReport> {
         let workspace = ProblemWorkspace::discover_from(&self.start_path)?;
         run_sample_tests_selected(&workspace, &SystemCommandRunner, selected_case).await
+    }
+
+    pub(crate) async fn run(&self, input: Option<PathBuf>) -> Result<RunReport> {
+        let workspace = ProblemWorkspace::discover_from(&self.start_path)?;
+        let input = input
+            .map(|path| CommandInput::File(self.start_path.join(path)))
+            .unwrap_or(CommandInput::Inherit);
+        run_program(&workspace, &SystemCommandRunner, input).await
     }
 
     pub(crate) async fn submit<F>(&self, no_test: bool, mut event: F) -> Result<SubmitOutcome>
