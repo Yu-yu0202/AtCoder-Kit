@@ -35,6 +35,7 @@ enum Commands {
         /// Contest ID (ex. abc001, ahc001, awc0001)
         contest_id: String,
         /// Template name
+        #[arg(short = 't', long = "template" , conflicts_with = "no_template")]
         template_name: Option<String>,
         /// Skip clone default template
         #[arg(short, long)]
