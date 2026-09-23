@@ -1,7 +1,7 @@
 use crate::application::program::{CompileResult, compile_program, execute_program};
 use crate::workspace::command::{CommandInput, CommandOutput, CommandRunner};
 use crate::workspace::problem::ProblemWorkspace;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -49,6 +49,36 @@ pub(crate) async fn run_sample_tests(
     workspace: &ProblemWorkspace,
     runner: &dyn CommandRunner,
 ) -> Result<SampleTestReport> {
+    run_sample_tests_impl(workspace, runner, None).await
+}
+
+pub(crate) async fn run_sample_tests_selected(
+    workspace: &ProblemWorkspace,
+    runner: &dyn CommandRunner,
+    selected_case: Option<NonZeroUsize>,
+) -> Result<SampleTestReport> {
+    let samples = &workspace.problem().sample_cases;
+    if samples.is_empty() {
+        bail!("No sample cases are available.");
+    }
+    if let Some(index) = selected_case
+        && index.get() > samples.len()
+    {
+        bail!(
+            "Sample case {} does not exist ({} available).",
+            index,
+            samples.len()
+        );
+    }
+    run_sample_tests_impl(workspace, runner, selected_case).await
+}
+
+async fn run_sample_tests_impl(
+    workspace: &ProblemWorkspace,
+    runner: &dyn CommandRunner,
+    selected_case: Option<NonZeroUsize>,
+) -> Result<SampleTestReport> {
+    let samples = &workspace.problem().sample_cases;
     let compilation = compile_program(workspace, runner).await?;
     if compilation
         .as_ref()
@@ -61,7 +91,11 @@ pub(crate) async fn run_sample_tests(
     }
 
     let mut cases = Vec::new();
-    for sample in &workspace.problem().sample_cases {
+    for (position, sample) in samples.iter().enumerate() {
+        let index = NonZeroUsize::new(position + 1).expect("sample case index must be non-zero");
+        if selected_case.is_some_and(|selected| selected != index) {
+            continue;
+        }
         let timeout = Duration::from_millis(workspace.problem().time_limit_msecs as u64)
             .saturating_add(Duration::from_secs(2));
         let output = execute_program(
@@ -83,7 +117,7 @@ pub(crate) async fn run_sample_tests(
             SampleCaseStatus::Ac
         };
         cases.push(SampleCaseResult {
-            index: NonZeroUsize::new(cases.len() + 1).expect("sample case index must be non-zero"),
+            index,
             status,
             expected: sample.expected.clone(),
             output,
@@ -287,5 +321,59 @@ mod tests {
             cases: vec![failed_case],
         };
         assert!(!failed_cases.is_success());
+    }
+    #[tokio::test]
+    async fn selects_original_case_number_and_rejects_missing_case_before_compile() {
+        let (temp, _) = workspace(Some(&["compiler", "main.rs"]));
+        let contest_path = temp.path().join("abc999/contest.json");
+        let mut contest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&contest_path).unwrap()).unwrap();
+        contest["problems"]["A"]["sample_cases"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"input": "4 5\n", "expected": "9\n"}));
+        std::fs::write(&contest_path, serde_json::to_vec(&contest).unwrap()).unwrap();
+        let workspace = ProblemWorkspace::discover_from(&temp.path().join("abc999/a")).unwrap();
+        let runner = FakeRunner::with_outputs([output(true, ""), output(true, "9\n")]);
+        let report = run_sample_tests_selected(&workspace, &runner, NonZeroUsize::new(2))
+            .await
+            .unwrap();
+        assert_eq!(report.cases.len(), 1);
+        assert_eq!(report.cases[0].index.get(), 2);
+        {
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[1].input, CommandInput::Bytes(b"4 5\n".to_vec()));
+        }
+
+        let empty_runner = FakeRunner::with_outputs([]);
+        let error = run_sample_tests_selected(&workspace, &empty_runner, NonZeroUsize::new(3))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Sample case 3 does not exist"));
+        assert!(empty_runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_samples_reject_cli_test_without_changing_submit_path() {
+        let (temp, _) = workspace(None);
+        let contest_path = temp.path().join("abc999/contest.json");
+        let mut contest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&contest_path).unwrap()).unwrap();
+        contest["problems"]["A"]["sample_cases"] = serde_json::json!([]);
+        std::fs::write(&contest_path, serde_json::to_vec(&contest).unwrap()).unwrap();
+        let workspace = ProblemWorkspace::discover_from(&temp.path().join("abc999/a")).unwrap();
+        let runner = FakeRunner::with_outputs([]);
+        assert!(
+            run_sample_tests_selected(&workspace, &runner, None)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("No sample cases")
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
+        let report = run_sample_tests(&workspace, &runner).await.unwrap();
+        assert!(report.is_success());
+        assert!(report.cases.is_empty());
     }
 }

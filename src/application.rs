@@ -2,7 +2,7 @@ mod program;
 pub(crate) mod sample;
 mod submit;
 
-use crate::application::sample::{SampleTestReport, run_sample_tests};
+use crate::application::sample::{SampleTestReport, run_sample_tests_selected};
 use crate::application::submit::{prepare_solution, submit_prepared_solution};
 use crate::client::AtCoderClient;
 use crate::client::auth::{prompt_revel_session, verify_current_session};
@@ -15,6 +15,7 @@ use crate::workspace::template::{
     NewTemplate, TemplateRegistry, create_template, load_template_config_from,
 };
 use anyhow::{Context, Result};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 pub(crate) enum AppEvent {
@@ -103,9 +104,12 @@ impl Application {
         Ok(DownloadOutcome { path })
     }
 
-    pub(crate) async fn test(&self) -> Result<SampleTestReport> {
+    pub(crate) async fn test(
+        &self,
+        selected_case: Option<NonZeroUsize>,
+    ) -> Result<SampleTestReport> {
         let workspace = ProblemWorkspace::discover_from(&self.start_path)?;
-        run_sample_tests(&workspace, &SystemCommandRunner).await
+        run_sample_tests_selected(&workspace, &SystemCommandRunner, selected_case).await
     }
 
     pub(crate) async fn submit<F>(&self, no_test: bool, mut event: F) -> Result<SubmitOutcome>

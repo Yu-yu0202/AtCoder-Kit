@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use log::{info, warn};
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -43,7 +44,11 @@ enum Commands {
     },
     /// Test the program with sample cases
     #[command(visible_alias = "t")]
-    Test,
+    Test {
+        /// Run only the specified sample case (1-based)
+        #[arg(long = "case")]
+        case: Option<NonZeroUsize>,
+    },
     /// Submit the program
     #[command(visible_alias = "s")]
     Submit {
@@ -263,7 +268,7 @@ pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> 
                 .await?;
             let _ = outcome.path;
         }
-        Commands::Test => show_test_results(&application.test().await?),
+        Commands::Test { case } => show_test_results(&application.test(case).await?),
         Commands::Submit { no_test } => {
             let outcome = application.submit(no_test, show_event).await?;
             info!("Submit URL: {}", outcome.submission_url);
@@ -360,7 +365,7 @@ mod tests {
             }
         );
         assert_eq!(
-            Cli::try_parse_from(&["ackit", "d", "abc999", "-t", "cpp", "--no-template"])
+            Cli::try_parse_from(["ackit", "d", "abc999", "-t", "cpp", "--no-template"])
                 .err()
                 .unwrap()
                 .kind(),
@@ -374,7 +379,20 @@ mod tests {
 
     #[test]
     fn parses_test_submit_and_template_commands() {
-        assert_eq!(command(&["ackit", "t"]), Commands::Test);
+        for subcommand in ["test", "t"] {
+            assert_eq!(
+                command(&["ackit", subcommand, "--case", "2"]),
+                Commands::Test { case: NonZeroUsize::new(2) }
+            );
+            assert!(Cli::try_parse_from(["ackit", subcommand, "--case", "0"]).is_err());
+            assert!(Cli::try_parse_from(["ackit", subcommand, "--case", "abc"]).is_err());
+        }
+        assert_eq!(
+            command(&["ackit", "t"]),
+            Commands::Test {
+                case: None
+            }
+        );
         assert_eq!(
             command(&["ackit", "s", "-n"]),
             Commands::Submit { no_test: true }
