@@ -1,3 +1,4 @@
+use crate::application::program::execute_command;
 use crate::application::sample::run_sample_tests;
 use crate::client::AtCoderClient;
 use crate::workspace::command::{CommandInput, CommandRunner};
@@ -38,14 +39,14 @@ pub(crate) async fn run_pre_submit(
     runner: &dyn CommandRunner,
 ) -> Result<()> {
     if let Some(pre_submit) = &workspace.template().pre_submit {
-        let output = runner
-            .run(
-                pre_submit,
-                workspace.problem_dir(),
-                CommandInput::Null,
-                PRE_SUBMIT_TIMEOUT,
-            )
-            .await?;
+        let output = execute_command(
+            workspace,
+            runner,
+            pre_submit,
+            CommandInput::Null,
+            PRE_SUBMIT_TIMEOUT,
+        )
+        .await?;
         if !output.success {
             let timeout_message = if output.timed_out {
                 format!(
@@ -189,6 +190,45 @@ mod tests {
             [
                 vec!["pre".to_string()],
                 vec!["python".into(), "main.py".into()]
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn preparation_compiles_once_before_running_samples() {
+        let (temp, _) = workspace();
+        let problem = temp.path().join("abc999/a");
+        let template_path = problem.join("template.json");
+        let mut template: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&template_path).unwrap()).unwrap();
+        template["compile_command"] = serde_json::json!(["compiler", "main.py"]);
+        std::fs::write(&template_path, serde_json::to_vec(&template).unwrap()).unwrap();
+        let workspace = ProblemWorkspace::discover_from(&problem).unwrap();
+
+        let runner =
+            FakeRunner::with_outputs([output(true, ""), output(true, ""), output(true, "3\n")]);
+        let source = prepare_solution(&workspace, &runner, false).await.unwrap();
+        assert_eq!(source, "print(3)\r\n");
+        assert_eq!(
+            *runner.calls.lock().unwrap(),
+            [
+                vec!["pre".to_string()],
+                vec!["compiler".into(), "main.py".into()],
+                vec!["python".into(), "main.py".into()],
+            ]
+        );
+
+        let compile_failure = FakeRunner::with_outputs([output(true, ""), output(false, "")]);
+        assert!(
+            prepare_solution(&workspace, &compile_failure, false)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            *compile_failure.calls.lock().unwrap(),
+            [
+                vec!["pre".to_string()],
+                vec!["compiler".into(), "main.py".into()],
             ]
         );
     }

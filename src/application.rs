@@ -1,3 +1,4 @@
+mod program;
 pub(crate) mod sample;
 mod submit;
 
