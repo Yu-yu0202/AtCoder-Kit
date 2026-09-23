@@ -35,6 +35,7 @@ enum Commands {
         /// Contest ID (ex. abc001, ahc001, awc0001)
         contest_id: String,
         /// Template name
+        #[arg(short = 't', long = "template" , conflicts_with = "no_template")]
         template_name: Option<String>,
         /// Skip clone default template
         #[arg(short, long)]
@@ -347,12 +348,19 @@ mod tests {
     #[test]
     fn parses_download_aliases_and_options() {
         assert_eq!(
-            command(&["ackit", "d", "abc999", "cpp", "--no-template"]),
+            command(&["ackit", "d", "abc999", "-t", "cpp"]),
             Commands::Download {
                 contest_id: "abc999".into(),
                 template_name: Some("cpp".into()),
-                no_template: true,
+                no_template: false,
             }
+        );
+        assert_eq!(
+            Cli::try_parse_from(&["ackit", "d", "abc999", "-t", "cpp", "--no-template"])
+                .err()
+                .unwrap()
+                .kind(),
+            clap::error::ErrorKind::ArgumentConflict
         );
         assert!(matches!(
             command(&["ackit", "n", "abc999"]),
