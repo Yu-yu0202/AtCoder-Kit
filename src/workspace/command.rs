@@ -191,18 +191,33 @@ impl SystemCommandRunner {
             capture_tasks.spawn(drain_capture(stderr, Arc::clone(&stderr_capture)));
         }
 
+        #[cfg(unix)]
+        let (stopped_tx, mut stopped_rx) = tokio::sync::mpsc::unbounded_channel();
+        #[cfg(unix)]
+        let mut wait_task = tokio::task::spawn_blocking(move || {
+            wait_for_child(child, passthrough.then_some(stopped_tx))
+        });
+        #[cfg(windows)]
         let mut wait_task = tokio::task::spawn_blocking(move || wait_for_child(child));
         let wait_result = match timeout {
             Some(timeout) => tokio::time::timeout(timeout, &mut wait_task).await.ok(),
             None => {
                 #[cfg(unix)]
                 {
-                    tokio::select! {
-                        result = &mut wait_task => Some(result),
-                        _ = interrupt_signal.as_mut().expect("passthrough has SIGINT listener").recv() => {
-                            process_tree.terminate().context("Failed to stop interrupted command process tree.")?;
-                            wait_task.await.context("Failed to join interrupted command wait task.")??;
-                            anyhow::bail!("Program interrupted by Ctrl+C.");
+                    loop {
+                        tokio::select! {
+                            biased;
+                            result = &mut wait_task => break Some(result),
+                            _ = interrupt_signal.as_mut().expect("passthrough has SIGINT listener").recv() => {
+                                process_tree.terminate().context("Failed to stop interrupted command process tree.")?;
+                                wait_task.await.context("Failed to join interrupted command wait task.")??;
+                                anyhow::bail!("Program interrupted by Ctrl+C.");
+                            }
+                            stopped = stopped_rx.recv() => {
+                                if stopped.is_some() && !wait_task.is_finished() {
+                                    process_tree.suspend_for_stopped_child()?;
+                                }
+                            }
                         }
                     }
                 }
@@ -269,15 +284,29 @@ pub(super) struct ResourceUsage {
 }
 
 #[cfg(unix)]
-fn wait_for_child(child: std::process::Child) -> Result<(ExitStatus, Option<ResourceUsage>)> {
+fn wait_for_child(
+    child: std::process::Child,
+    stopped: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+) -> Result<(ExitStatus, Option<ResourceUsage>)> {
     use std::os::unix::process::ExitStatusExt;
 
     let pid = i32::try_from(child.id()).context("Command process ID is too large for wait4.")?;
     loop {
         let mut status = 0;
         let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
-        let result = unsafe { libc::wait4(pid, &mut status, 0, usage.as_mut_ptr()) };
+        let flags = if stopped.is_some() {
+            libc::WUNTRACED
+        } else {
+            0
+        };
+        let result = unsafe { libc::wait4(pid, &mut status, flags, usage.as_mut_ptr()) };
         if result == pid {
+            if libc::WIFSTOPPED(status) {
+                if let Some(stopped) = &stopped {
+                    let _ = stopped.send(());
+                }
+                continue;
+            }
             let usage = unsafe { usage.assume_init() };
             return Ok((
                 ExitStatus::from_raw(status),
@@ -798,12 +827,168 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn stopped_child_resumes_with_bg_without_stealing_terminal() {
+        use std::io::BufRead;
+        use std::sync::mpsc;
+
+        let executable = std::env::current_exe().unwrap();
+        let nested = shell_words::join([
+            executable.to_string_lossy().into_owned(),
+            "--ignored".into(),
+            "--exact".into(),
+            "workspace::command::tests::pty_input_helper".into(),
+            "--nocapture".into(),
+        ]);
+        let shell = format!(
+            "stty -echo; ACKIT_PTY_BACKGROUND=1 {nested}; printf 'stopped_jobs=%s\\n' \"$(jobs -s | wc -l)\"; bg; read after; wait; printf 'shell=%s\\n' \"$after\""
+        );
+        let bash = shell_words::join(["bash", "-ic", &shell]);
+        let mut script = match Command::new("timeout")
+            .args([
+                "-k",
+                "1s",
+                "10s",
+                "script",
+                "-q",
+                "-e",
+                "-c",
+                &bash,
+                "/dev/null",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(script) => script,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("Failed to start PTY test: {error}"),
+        };
+        let stdout = script.stdout.take().unwrap();
+        let (lines_tx, lines_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut output = String::new();
+            for line in std::io::BufReader::new(stdout).lines() {
+                let line = line.unwrap();
+                output.push_str(&line);
+                output.push('\n');
+                let _ = lines_tx.send(line);
+            }
+            output
+        });
+        let mut stdin = script.stdin.take().unwrap();
+        let wait_for = |needle: &str| {
+            let deadline = Instant::now() + Duration::from_secs(6);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let line = lines_rx
+                    .recv_timeout(remaining)
+                    .expect("PTY output stalled");
+                if line.contains(needle) {
+                    break;
+                }
+            }
+        };
+        wait_for("child-ready");
+        stdin.write_all(&[0x1a]).unwrap();
+        wait_for("stopped_jobs=1");
+        stdin.write_all(b"shell-input\n").unwrap();
+        drop(stdin);
+        let status = script.wait().unwrap();
+        let stdout = reader.join().unwrap();
+        assert!(status.success(), "stdout: {stdout}; status: {status}");
+        assert!(stdout.contains("bg-done"), "{stdout}");
+        assert!(stdout.contains("shell=shell-input"), "{stdout}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stopped_foreground_child_returns_terminal_and_resumes_with_fg() {
+        use std::io::BufRead;
+        use std::sync::mpsc;
+
+        let executable = std::env::current_exe().unwrap();
+        let nested = shell_words::join([
+            executable.to_string_lossy().into_owned(),
+            "--ignored".into(),
+            "--exact".into(),
+            "workspace::command::tests::pty_input_helper".into(),
+            "--nocapture".into(),
+        ]);
+        let shell = format!(
+            "stty -echo; ACKIT_PTY_SUSPEND=1 {nested}; printf 'stopped_jobs=%s\\n' \"$(jobs -s | wc -l)\"; fg; read after; printf 'shell=%s\\n' \"$after\""
+        );
+        let bash = shell_words::join(["bash", "-ic", &shell]);
+        let mut script = match Command::new("timeout")
+            .args([
+                "-k",
+                "1s",
+                "10s",
+                "script",
+                "-q",
+                "-e",
+                "-c",
+                &bash,
+                "/dev/null",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(script) => script,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("Failed to start PTY test: {error}"),
+        };
+        let stdout = script.stdout.take().unwrap();
+        let (lines_tx, lines_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut output = String::new();
+            for line in std::io::BufReader::new(stdout).lines() {
+                let line = line.unwrap();
+                output.push_str(&line);
+                output.push('\n');
+                let _ = lines_tx.send(line);
+            }
+            output
+        });
+        let mut stdin = script.stdin.take().unwrap();
+        let wait_for = |needle: &str| {
+            let deadline = Instant::now() + Duration::from_secs(6);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let line = lines_rx
+                    .recv_timeout(remaining)
+                    .expect("PTY output stalled");
+                if line.contains(needle) {
+                    break;
+                }
+            }
+        };
+        wait_for("child-ready");
+        stdin.write_all(&[0x1a]).unwrap();
+        wait_for("stopped_jobs=1");
+        stdin.write_all(b"first\nsecond\n").unwrap();
+        drop(stdin);
+        let status = script.wait().unwrap();
+        let stdout = reader.join().unwrap();
+        assert!(status.success(), "stdout: {stdout}; status: {status}");
+        assert!(stdout.contains("stdin=first"), "{stdout}");
+        assert!(stdout.contains("shell=second"), "{stdout}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     #[ignore]
     fn pty_input_helper() {
         let executable = std::env::current_exe().unwrap();
         let timed_out = std::env::var_os("ACKIT_PTY_TIMEOUT").is_some();
         let helper = if timed_out {
             "workspace::command::tests::pty_slow_helper"
+        } else if std::env::var_os("ACKIT_PTY_BACKGROUND").is_some() {
+            "workspace::command::tests::pty_background_helper"
+        } else if std::env::var_os("ACKIT_PTY_SUSPEND").is_some() {
+            "workspace::command::tests::pty_suspend_reader_helper"
         } else {
             "workspace::command::tests::pty_reader_helper"
         };
@@ -851,6 +1036,26 @@ mod tests {
     #[ignore]
     fn pty_slow_helper() {
         std::thread::sleep(Duration::from_secs(10));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn pty_background_helper() {
+        println!("child-ready");
+        std::thread::sleep(Duration::from_millis(300));
+        println!("bg-done");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn pty_suspend_reader_helper() {
+        use std::io::BufRead;
+        println!("child-ready");
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line).unwrap();
+        println!("stdin={}", line.trim_end());
     }
 
     #[cfg(target_os = "linux")]

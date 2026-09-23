@@ -7,11 +7,14 @@ mod imp {
     struct ForegroundTerminal {
         fd: libc::c_int,
         previous_group: libc::pid_t,
+        owned: bool,
     }
 
     impl Drop for ForegroundTerminal {
         fn drop(&mut self) {
-            let _ = set_foreground_group(self.fd, self.previous_group);
+            if self.owned {
+                let _ = set_foreground_group(self.fd, self.previous_group);
+            }
         }
     }
 
@@ -80,25 +83,30 @@ mod imp {
             Ok(())
         }
 
-        pub(in crate::workspace) fn make_foreground(&mut self) -> Result<()> {
-            let Some((fd, previous_group)) =
-                [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
-                    .into_iter()
-                    .find_map(|fd| {
-                        if unsafe { libc::isatty(fd) } != 1 {
-                            return None;
-                        }
-                        let group = unsafe { libc::tcgetpgrp(fd) };
-                        (group >= 0).then_some((fd, group))
-                    })
+        pub(in crate::workspace) fn make_foreground(&mut self) -> Result<bool> {
+            let Some((fd, previous_group)) = self
+                .terminal
+                .as_ref()
+                .map(|terminal| (terminal.fd, terminal.previous_group))
+                .or_else(|| {
+                    [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                        .into_iter()
+                        .find_map(|fd| {
+                            if unsafe { libc::isatty(fd) } != 1 {
+                                return None;
+                            }
+                            let group = unsafe { libc::tcgetpgrp(fd) };
+                            (group >= 0).then_some((fd, group))
+                        })
+                })
             else {
-                return Ok(());
+                return Ok(false);
             };
             let group = self
                 .process_group
                 .context("Command process group is not attached.")?;
-            if previous_group != unsafe { libc::getpgrp() } {
-                return Ok(());
+            if unsafe { libc::tcgetpgrp(fd) } != unsafe { libc::getpgrp() } {
+                return Ok(false);
             }
             if let Err(error) = set_foreground_group(fd, group) {
                 // A short-lived command can exit before the handoff. Its exit status
@@ -106,11 +114,19 @@ mod imp {
                 if unsafe { libc::kill(-group, 0) } == -1
                     && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
                 {
-                    return Ok(());
+                    return Ok(false);
                 }
                 return Err(error);
             }
-            self.terminal = Some(ForegroundTerminal { fd, previous_group });
+            if let Some(terminal) = self.terminal.as_mut() {
+                terminal.owned = true;
+            } else {
+                self.terminal = Some(ForegroundTerminal {
+                    fd,
+                    previous_group,
+                    owned: true,
+                });
+            }
             // The child may have attempted to read before the handoff and stopped
             // with SIGTTIN. Resume the whole group after making it foreground.
             if unsafe { libc::kill(-group, libc::SIGCONT) } != 0 {
@@ -118,6 +134,41 @@ mod imp {
                 if error.raw_os_error() != Some(libc::ESRCH) {
                     return Err(error)
                         .context("Failed to resume foreground command process group.");
+                }
+            }
+            Ok(true)
+        }
+
+        pub(in crate::workspace) fn suspend_for_stopped_child(&mut self) -> Result<()> {
+            if let Some(terminal) = self.terminal.as_mut()
+                && terminal.owned
+            {
+                set_foreground_group(terminal.fd, terminal.previous_group)
+                    .context("Failed to return terminal before suspending command.")?;
+                terminal.owned = false;
+            }
+
+            // Stop only ackit: a non-interactive shell may share its process group.
+            // SIGSTOP also works when SIGTSTP was inherited as ignored.
+            if unsafe { libc::raise(libc::SIGSTOP) } != 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("Failed to suspend command runner.");
+            }
+
+            if !self.make_foreground()? {
+                self.resume_child()?;
+            }
+            Ok(())
+        }
+
+        fn resume_child(&self) -> Result<()> {
+            let group = self
+                .process_group
+                .context("Command process group is not attached.")?;
+            if unsafe { libc::kill(-group, libc::SIGCONT) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error).context("Failed to resume command process group.");
                 }
             }
             Ok(())
