@@ -348,12 +348,19 @@ mod tests {
     #[test]
     fn parses_download_aliases_and_options() {
         assert_eq!(
-            command(&["ackit", "d", "abc999", "cpp", "--no-template"]),
+            command(&["ackit", "d", "abc999", "-t", "cpp"]),
             Commands::Download {
                 contest_id: "abc999".into(),
                 template_name: Some("cpp".into()),
-                no_template: true,
+                no_template: false,
             }
+        );
+        assert_eq!(
+            Cli::try_parse_from(&["ackit", "d", "abc999", "-t", "cpp", "--no-template"])
+                .err()
+                .unwrap()
+                .kind(),
+            clap::error::ErrorKind::ArgumentConflict
         );
         assert!(matches!(
             command(&["ackit", "n", "abc999"]),
