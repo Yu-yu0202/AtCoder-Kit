@@ -1,7 +1,8 @@
 #[cfg(unix)]
 mod imp {
     use anyhow::{Context, Result};
-    use tokio::process::{Child, Command};
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command};
 
     pub(in crate::workspace) struct ProcessTree {
         process_group: Option<i32>,
@@ -16,13 +17,19 @@ mod imp {
         }
 
         pub(in crate::workspace) fn attach(&mut self, child: &Child) -> Result<()> {
-            let process_group = child.id().context("Command process has already exited.")?;
+            let process_group = child.id();
             self.process_group = Some(
                 process_group
                     .try_into()
                     .context("Command process ID is too large for a Unix process group.")?,
             );
             Ok(())
+        }
+
+        pub(in crate::workspace) fn resource_usage(
+            &self,
+        ) -> Option<super::super::command::ResourceUsage> {
+            None
         }
 
         pub(in crate::workspace) fn terminate(&mut self) -> Result<()> {
@@ -55,19 +62,23 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
+    use super::super::command::ResourceUsage;
     use anyhow::{Context, Result};
     use std::ffi::c_void;
     use std::mem::size_of;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use tokio::process::{Child, Command};
+    use std::os::windows::process::CommandExt;
+    use std::process::{Child, Command};
+    use std::time::Duration;
     use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+        QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
         CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
@@ -109,18 +120,58 @@ mod imp {
         }
 
         pub(in crate::workspace) fn attach(&mut self, child: &Child) -> Result<()> {
-            let process = child
-                .raw_handle()
-                .context("Command process has already exited.")?;
-            let assigned = unsafe { AssignProcessToJobObject(self.job.as_raw_handle(), process) };
+            let assigned = unsafe {
+                AssignProcessToJobObject(self.job.as_raw_handle(), child.as_raw_handle())
+            };
             if assigned == 0 {
                 return Err(std::io::Error::last_os_error())
                     .context("Failed to assign command to Job Object.");
             }
 
-            let process_id = child.id().context("Command process has already exited.")?;
+            let process_id = child.id();
             resume_process_threads(process_id)
                 .context("Failed to resume command after assigning its Job Object.")
+        }
+
+        pub(in crate::workspace) fn resource_usage(&self) -> Option<ResourceUsage> {
+            let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+            let accounting_ok = unsafe {
+                QueryInformationJobObject(
+                    self.job.as_raw_handle(),
+                    JobObjectBasicAccountingInformation,
+                    (&raw mut accounting).cast::<c_void>(),
+                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                )
+            } != 0;
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            let limits_ok = unsafe {
+                QueryInformationJobObject(
+                    self.job.as_raw_handle(),
+                    JobObjectExtendedLimitInformation,
+                    (&raw mut limits).cast::<c_void>(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                )
+            } != 0;
+            if !accounting_ok && !limits_ok {
+                return None;
+            }
+            let ticks_to_duration = |ticks: i64| {
+                u64::try_from(ticks)
+                    .ok()
+                    .and_then(|ticks| ticks.checked_mul(100))
+                    .map(Duration::from_nanos)
+            };
+            Some(ResourceUsage {
+                user: accounting_ok
+                    .then(|| ticks_to_duration(accounting.TotalUserTime))
+                    .flatten(),
+                system: accounting_ok
+                    .then(|| ticks_to_duration(accounting.TotalKernelTime))
+                    .flatten(),
+                peak_memory_bytes: limits_ok.then_some(limits.PeakJobMemoryUsed as u64),
+            })
         }
 
         pub(in crate::workspace) fn terminate(&mut self) -> Result<()> {

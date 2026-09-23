@@ -3,11 +3,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
 use tokio::task::JoinSet;
 
 const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
@@ -54,6 +53,10 @@ pub(crate) struct CommandOutput {
     pub(crate) stderr: String,
     pub(crate) stdout_truncated: bool,
     pub(crate) stderr_truncated: bool,
+    pub(crate) real_time: Duration,
+    pub(crate) cpu_user_time: Option<Duration>,
+    pub(crate) cpu_system_time: Option<Duration>,
+    pub(crate) peak_memory_bytes: Option<u64>,
 }
 
 #[async_trait]
@@ -105,14 +108,15 @@ impl CommandRunner for SystemCommandRunner {
                 process.stdin(Stdio::from(input_file));
             }
         }
-        process.kill_on_drop(true);
         let mut process_tree = ProcessTree::prepare(&mut process)?;
 
         let mut child = process
             .spawn()
             .with_context(|| format!("Failed to run command '{}'.", command.program))?;
+        let started = Instant::now();
         if let Err(error) = process_tree.attach(&child) {
-            let _ = child.kill().await;
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(error).context("Failed to isolate command process tree.");
         }
         let stdout = child
@@ -123,25 +127,34 @@ impl CommandRunner for SystemCommandRunner {
             .stderr
             .take()
             .context("Failed to capture command stderr.")?;
+        let stdout = tokio::process::ChildStdout::from_std(stdout)
+            .context("Failed to capture command stdout asynchronously.")?;
+        let stderr = tokio::process::ChildStderr::from_std(stderr)
+            .context("Failed to capture command stderr asynchronously.")?;
         let stdout_capture = Arc::new(Mutex::new(Capture::default()));
         let stderr_capture = Arc::new(Mutex::new(Capture::default()));
         let mut capture_tasks = JoinSet::new();
         capture_tasks.spawn(drain_capture(stdout, Arc::clone(&stdout_capture)));
         capture_tasks.spawn(drain_capture(stderr, Arc::clone(&stderr_capture)));
 
-        let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(status) => (Some(status.context("Failed to wait for command.")?), false),
+        let mut wait_task = tokio::task::spawn_blocking(move || wait_for_child(child));
+        let (status, usage, timed_out) = match tokio::time::timeout(timeout, &mut wait_task).await {
+            Ok(result) => {
+                let (status, usage) = result.context("Failed to join command wait task.")??;
+                (Some(status), usage, false)
+            }
             Err(_) => {
                 process_tree
                     .terminate()
                     .context("Failed to stop timed-out command process tree.")?;
-                child
-                    .wait()
+                let (_, usage) = wait_task
                     .await
-                    .context("Failed to wait for timed-out command.")?;
-                (None, true)
+                    .context("Failed to join timed-out command wait task.")??;
+                (None, usage, true)
             }
         };
+        let real_time = started.elapsed();
+        let usage = process_tree.resource_usage().or(usage);
 
         match tokio::time::timeout(
             CAPTURE_SHUTDOWN_TIMEOUT,
@@ -166,8 +179,74 @@ impl CommandRunner for SystemCommandRunner {
             stderr: stderr.text,
             stdout_truncated: stdout.truncated,
             stderr_truncated: stderr.truncated,
+            real_time,
+            cpu_user_time: usage.and_then(|usage| usage.user),
+            cpu_system_time: usage.and_then(|usage| usage.system),
+            peak_memory_bytes: usage.and_then(|usage| usage.peak_memory_bytes),
         })
     }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct ResourceUsage {
+    pub(super) user: Option<Duration>,
+    pub(super) system: Option<Duration>,
+    pub(super) peak_memory_bytes: Option<u64>,
+}
+
+#[cfg(unix)]
+fn wait_for_child(child: std::process::Child) -> Result<(ExitStatus, Option<ResourceUsage>)> {
+    use std::os::unix::process::ExitStatusExt;
+
+    let pid = i32::try_from(child.id()).context("Command process ID is too large for wait4.")?;
+    loop {
+        let mut status = 0;
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+        let result = unsafe { libc::wait4(pid, &mut status, 0, usage.as_mut_ptr()) };
+        if result == pid {
+            let usage = unsafe { usage.assume_init() };
+            return Ok((
+                ExitStatus::from_raw(status),
+                Some(resource_usage_from_rusage(&usage)),
+            ));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error).context("Failed to wait for command with wait4.");
+        }
+    }
+}
+
+#[cfg(unix)]
+fn resource_usage_from_rusage(usage: &libc::rusage) -> ResourceUsage {
+    fn timeval_duration(time: libc::timeval) -> Option<Duration> {
+        let seconds = u64::try_from(time.tv_sec).ok()?;
+        let micros = u32::try_from(time.tv_usec).ok()?;
+        if micros >= 1_000_000 {
+            return None;
+        }
+        Some(Duration::new(seconds, micros * 1_000))
+    }
+
+    #[cfg(target_os = "linux")]
+    let peak_memory_bytes = u64::try_from(usage.ru_maxrss)
+        .ok()
+        .and_then(|kb| kb.checked_mul(1024));
+    #[cfg(target_os = "macos")]
+    let peak_memory_bytes = u64::try_from(usage.ru_maxrss).ok();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let peak_memory_bytes = None;
+
+    ResourceUsage {
+        user: timeval_duration(usage.ru_utime),
+        system: timeval_duration(usage.ru_stime),
+        peak_memory_bytes,
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_child(mut child: std::process::Child) -> Result<(ExitStatus, Option<ResourceUsage>)> {
+    Ok((child.wait().context("Failed to wait for command.")?, None))
 }
 
 async fn finish_capture_tasks(tasks: &mut JoinSet<Result<()>>) -> Result<()> {
@@ -284,6 +363,13 @@ mod tests {
         assert!(output.success, "{}", output.stderr);
         assert!(output.stdout.contains("sample input"));
         assert!(output.stdout.contains(&temp.path().display().to_string()));
+        assert!(output.real_time > Duration::ZERO);
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        {
+            assert!(output.cpu_user_time.is_some());
+            assert!(output.cpu_system_time.is_some());
+            assert!(output.peak_memory_bytes.is_some_and(|bytes| bytes > 0));
+        }
     }
 
     #[tokio::test]
@@ -311,6 +397,13 @@ mod tests {
         assert!(output.timed_out);
         assert!(!output.success);
         assert_eq!(output.exit_code, None);
+        assert!(output.real_time >= Duration::from_millis(50));
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        {
+            assert!(output.cpu_user_time.is_some());
+            assert!(output.cpu_system_time.is_some());
+            assert!(output.peak_memory_bytes.is_some_and(|bytes| bytes > 0));
+        }
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert!(
             !temp.path().join("descendant-alive").exists(),
@@ -334,8 +427,7 @@ mod tests {
             .current_dir(temp.path())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+            .stderr(Stdio::null());
         let mut process_tree = ProcessTree::prepare(&mut process).unwrap();
         let mut child = process.spawn().unwrap();
 
@@ -346,7 +438,7 @@ mod tests {
         );
 
         process_tree.attach(&child).unwrap();
-        assert!(child.wait().await.unwrap().success());
+        assert!(child.wait().unwrap().success());
         assert!(temp.path().join("command-started").exists());
     }
 
