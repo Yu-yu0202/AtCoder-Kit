@@ -309,7 +309,8 @@ mod tests {
     const PROBLEM_JA: &str = include_str!("../../tests/fixtures/atcoder/problem_ja.html");
     const PROBLEM_EN: &str = include_str!("../../tests/fixtures/atcoder/problem_en.html");
     const PROBLEM_LEGACY: &str = include_str!("../../tests/fixtures/atcoder/problem_legacy.html");
-    const PROBLEM_NO_SAMPLE: &str = include_str!("../../tests/fixtures/atcoder/problem_no_samples.html");
+    const PROBLEM_NO_SAMPLE: &str =
+        include_str!("../../tests/fixtures/atcoder/problem_no_samples.html");
     const TASKS: &str = include_str!("../../tests/fixtures/atcoder/tasks.html");
     const SUBMIT_FORM: &str = include_str!("../../tests/fixtures/atcoder/submit_form.html");
     const SUBMISSIONS: &str = include_str!("../../tests/fixtures/atcoder/submissions.html");

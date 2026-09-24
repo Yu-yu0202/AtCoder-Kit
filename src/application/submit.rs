@@ -9,6 +9,16 @@ use std::time::Duration;
 
 const PRE_SUBMIT_TIMEOUT: Duration = Duration::from_secs(120);
 
+pub(crate) struct PreparedSolution {
+    source: String,
+}
+
+impl PreparedSolution {
+    pub(crate) fn source(&self) -> &str {
+        &self.source
+    }
+}
+
 pub(crate) fn normalize_source_to_crlf(source: &str) -> String {
     let mut normalized = String::with_capacity(source.len());
     for line in source.lines() {
@@ -71,7 +81,7 @@ pub(crate) async fn prepare_solution(
     workspace: &ProblemWorkspace,
     runner: &dyn CommandRunner,
     no_test: bool,
-) -> Result<String> {
+) -> Result<PreparedSolution> {
     run_pre_submit(workspace, runner).await?;
     if !no_test {
         let report = run_sample_tests(workspace, runner).await?;
@@ -79,20 +89,22 @@ pub(crate) async fn prepare_solution(
             bail!("Test failed. Please fix the issues and try submitting again.");
         }
     }
-    read_source_crlf(&workspace.submit_path(), workspace.problem_dir()).await
+    Ok(PreparedSolution {
+        source: read_source_crlf(&workspace.submit_path(), workspace.problem_dir()).await?,
+    })
 }
 
 pub(crate) async fn submit_prepared_solution(
     workspace: &ProblemWorkspace,
     client: &AtCoderClient,
-    source: String,
+    source: PreparedSolution,
 ) -> Result<String> {
     client
         .submit_solution(
             &workspace.contest().id,
             workspace.problem(),
             workspace.template().language_id,
-            source,
+            source.source,
         )
         .await
 }
@@ -197,7 +209,7 @@ mod tests {
         let runner = FakeRunner::with_outputs([output(true, ""), output(true, "3\n")]);
 
         let source = prepare_solution(&workspace, &runner, false).await.unwrap();
-        assert_eq!(source, "print(3)\r\n");
+        assert_eq!(source.source(), "print(3)\r\n");
         assert_eq!(
             *runner.calls.lock().unwrap(),
             [
@@ -221,7 +233,7 @@ mod tests {
         let runner =
             FakeRunner::with_outputs([output(true, ""), output(true, ""), output(true, "3\n")]);
         let source = prepare_solution(&workspace, &runner, false).await.unwrap();
-        assert_eq!(source, "print(3)\r\n");
+        assert_eq!(source.source(), "print(3)\r\n");
         assert_eq!(
             *runner.calls.lock().unwrap(),
             [
@@ -272,7 +284,7 @@ mod tests {
         let runner = FakeRunner::with_outputs([output(true, "")]);
 
         let source = prepare_solution(&workspace, &runner, true).await.unwrap();
-        assert_eq!(source, "print(3)\r\n");
+        assert_eq!(source.source(), "print(3)\r\n");
         assert_eq!(*runner.calls.lock().unwrap(), [vec!["pre".to_string()]]);
     }
 

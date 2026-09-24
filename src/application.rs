@@ -5,7 +5,7 @@ mod submit;
 pub(crate) use crate::application::program::RunReport;
 use crate::application::program::run_program;
 use crate::application::sample::{SampleTestReport, run_sample_tests_selected};
-use crate::application::submit::{prepare_solution, submit_prepared_solution};
+use crate::application::submit::{PreparedSolution, prepare_solution, submit_prepared_solution};
 use crate::client::AtCoderClient;
 use crate::client::auth::{prompt_revel_session, verify_current_session};
 use crate::client::cookie::Cookie;
@@ -120,6 +120,11 @@ impl Application {
             .map(|path| CommandInput::File(self.start_path.join(path)))
             .unwrap_or(CommandInput::Inherit);
         run_program(&workspace, &SystemCommandRunner, input).await
+    }
+
+    pub(crate) async fn prepare(&self, no_test: bool) -> Result<PreparedSolution> {
+        let workspace = ProblemWorkspace::discover_from(&self.start_path)?;
+        prepare_solution(&workspace, &SystemCommandRunner, no_test).await
     }
 
     pub(crate) async fn submit<F>(&self, no_test: bool, mut event: F) -> Result<SubmitOutcome>
