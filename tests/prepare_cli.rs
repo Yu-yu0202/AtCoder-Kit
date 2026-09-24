@@ -64,3 +64,20 @@ fn no_test_still_runs_pre_submit() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn copy_rejects_redirected_stdout_before_pre_submit() {
+    let temp = workspace(|template| {
+        template["pre_submit"] = serde_json::json!(["ackit-no-such-program"]);
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_ackit"))
+        .current_dir(temp.path().join("abc999/a"))
+        .args(["copy", "--no-test"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Copy requires stdout to be a terminal.")
+    );
+}

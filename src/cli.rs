@@ -4,11 +4,12 @@ use crate::application::{
 };
 use crate::workspace::command::CommandOutput;
 use crate::workspace::template::NewTemplate;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use base64::Engine;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use log::{info, warn};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -62,6 +63,12 @@ enum Commands {
     },
     /// Print the prepared submission source
     Prepare {
+        /// Skip sample tests, but still run pre-submit
+        #[arg(short, long)]
+        no_test: bool,
+    },
+    /// Send the prepared submission source to the terminal clipboard
+    Copy {
         /// Skip sample tests, but still run pre-submit
         #[arg(short, long)]
         no_test: bool,
@@ -317,6 +324,12 @@ fn show_run_result(report: RunReport) -> Result<()> {
     Ok(())
 }
 
+fn write_osc52(writer: &mut impl Write, source: &str) -> Result<()> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(source.as_bytes());
+    write!(writer, "\x1b]52;c;{encoded}\x07")?;
+    writer.flush().context("Failed to flush OSC 52 sequence.")
+}
+
 pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> {
     match cli.command {
         Commands::Login { overwrite } => match application.login(overwrite, show_event).await? {
@@ -365,6 +378,14 @@ pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> 
             io::stdout()
                 .write_all(source.source().as_bytes())
                 .context("Failed to write prepared source to stdout.")?;
+        }
+        Commands::Copy { no_test } => {
+            if !io::stdout().is_terminal() {
+                bail!("Copy requires stdout to be a terminal.");
+            }
+            let source = application.prepare(no_test).await?;
+            write_osc52(&mut io::stdout(), source.source())?;
+            info!("OSC 52 sequence sent to terminal.");
         }
         Commands::Submit { no_test } => {
             let outcome = application.submit(no_test, show_event).await?;
@@ -443,6 +464,13 @@ mod tests {
             error.to_string(),
             "Program terminated (exit code unavailable)."
         );
+    }
+
+    #[test]
+    fn osc52_encodes_normalized_source_and_flushes() {
+        let mut output = Vec::new();
+        write_osc52(&mut output, "print(3)\r\n").unwrap();
+        assert_eq!(output, b"\x1b]52;c;cHJpbnQoMykNCg==\x07");
     }
 
     #[test]
@@ -539,6 +567,10 @@ mod tests {
         assert_eq!(
             command(&["ackit", "prepare", "--no-test"]),
             Commands::Prepare { no_test: true }
+        );
+        assert_eq!(
+            command(&["ackit", "copy", "--no-test"]),
+            Commands::Copy { no_test: true }
         );
         assert_eq!(
             command(&["ackit", "s", "-n"]),
