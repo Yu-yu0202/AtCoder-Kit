@@ -4,10 +4,11 @@ use crate::application::{
 };
 use crate::workspace::command::CommandOutput;
 use crate::workspace::template::NewTemplate;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use log::{info, warn};
+use std::io::{self, Write};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -37,7 +38,7 @@ enum Commands {
         /// Contest ID (ex. abc001, ahc001, awc0001)
         contest_id: String,
         /// Template name
-        #[arg(short = 't', long = "template" , conflicts_with = "no_template")]
+        #[arg(short = 't', long = "template", conflicts_with = "no_template")]
         template_name: Option<String>,
         /// Skip clone default template
         #[arg(short, long)]
@@ -58,6 +59,12 @@ enum Commands {
         /// Read program stdin from this file
         #[arg(long)]
         input: Option<PathBuf>,
+    },
+    /// Print the prepared submission source
+    Prepare {
+        /// Skip sample tests, but still run pre-submit
+        #[arg(short, long)]
+        no_test: bool,
     },
     /// Submit the program
     #[command(visible_alias = "s")]
@@ -353,6 +360,12 @@ pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> 
             show_test_results(&application.test(case).await?, metrics)
         }
         Commands::Run { input } => show_run_result(application.run(input).await?)?,
+        Commands::Prepare { no_test } => {
+            let source = application.prepare(no_test).await?;
+            io::stdout()
+                .write_all(source.source().as_bytes())
+                .context("Failed to write prepared source to stdout.")?;
+        }
         Commands::Submit { no_test } => {
             let outcome = application.submit(no_test, show_event).await?;
             info!("Submit URL: {}", outcome.submission_url);
@@ -426,7 +439,10 @@ mod tests {
             }),
         })
         .unwrap_err();
-        assert_eq!(error.to_string(), "Program terminated (exit code unavailable).");
+        assert_eq!(
+            error.to_string(),
+            "Program terminated (exit code unavailable)."
+        );
     }
 
     #[test]
@@ -519,6 +535,10 @@ mod tests {
                 case: None,
                 metrics: false
             }
+        );
+        assert_eq!(
+            command(&["ackit", "prepare", "--no-test"]),
+            Commands::Prepare { no_test: true }
         );
         assert_eq!(
             command(&["ackit", "s", "-n"]),
