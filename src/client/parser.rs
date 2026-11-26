@@ -15,7 +15,7 @@ pub(crate) struct ParsedProblemPage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TaskRef {
     pub(crate) id: String,
-    pub(crate) href: String,
+    pub(crate) label: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,7 +192,7 @@ pub(crate) fn parse_problem_page(html: &str) -> Result<ParsedProblemPage> {
 pub(crate) fn parse_task_refs(html: &str, contest_id: &str) -> Result<Vec<TaskRef>> {
     let document = Html::parse_document(html);
     let row_selector = selector("#main-container tbody tr")?;
-    let link_selector = selector("a[href]")?;
+    let link_selector = selector("td:first-child a[href]")?;
     let expected_prefix = format!("/contests/{contest_id}/tasks/");
     let mut tasks = Vec::new();
 
@@ -216,9 +216,10 @@ pub(crate) fn parse_task_refs(html: &str, contest_id: &str) -> Result<Vec<TaskRe
         if tasks.iter().any(|task: &TaskRef| task.id == id) {
             bail!("Duplicate task ID: {id}");
         }
+        let label = element_text(link);
         tasks.push(TaskRef {
             id: id.to_string(),
-            href: href.to_string(),
+            label: label.trim().to_string(),
         });
     }
 
@@ -381,9 +382,9 @@ mod tests {
         assert_eq!(
             tasks
                 .iter()
-                .map(|task| task.id.as_str())
+                .map(|task| (task.label.as_str(), task.id.as_str()))
                 .collect::<Vec<_>>(),
-            ["abc999_a", "abc999_b"]
+            [("A", "abc999_a"), ("B", "abc999_b")]
         );
 
         let malformed = TASKS.replace(

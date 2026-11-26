@@ -1,4 +1,5 @@
 use crate::client::model::Problem;
+use crate::validation::validate_atcoder_identifier;
 use crate::workspace::contest::{find_contest_root_from, load_legacy_contest_from};
 use crate::workspace::template::{TemplateConfig, TemplateData, load_template_config_from};
 use crate::workspace::template_ignore::TemplateIgnore;
@@ -8,6 +9,86 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub(crate) const PROBLEM_JSON: &str = "problem.json";
+
+pub(crate) fn save_problem_to(
+    base: &Path,
+    problem: &Problem,
+    template: Option<&TemplateData>,
+) -> Result<PathBuf> {
+    validate_atcoder_identifier(&problem.id, "problem ID")?;
+    let destination = base.join(&problem.id);
+    let staging = tempfile::Builder::new()
+        .prefix(".ackit-problem-")
+        .tempdir_in(base)
+        .context("Failed to create problem staging directory.")?;
+    let staged_problem = staging.path().join(&problem.id);
+    write_problem_to(&staged_problem, problem, template)?;
+
+    match install_problem_directory(&staged_problem, &destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => bail!(
+            "Problem directory '{}' already exists; refusing to overwrite solutions.",
+            destination.display()
+        ),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to install problem directory '{}'.",
+                    destination.display()
+                )
+            });
+        }
+    }
+    Ok(destination)
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "redox"
+))]
+fn install_problem_directory(source: &Path, destination: &Path) -> io::Result<()> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+    // A plain rename can replace an empty directory created while staging.
+    renameat_with(CWD, source, CWD, destination, RenameFlags::NOREPLACE)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn install_problem_directory(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    let to_wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect::<Vec<_>>()
+    };
+    let source = to_wide(source);
+    let destination = to_wide(destination);
+    // Both paths are NUL-terminated and live for the call; flags of 0 forbid replacement.
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    target_os = "redox",
+    windows
+)))]
+fn install_problem_directory(_source: &Path, _destination: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Atomic directory installation without replacement is unavailable on this platform.",
+    ))
+}
 
 fn copy_recursive(source: &Path, destination: &Path, ignore: &TemplateIgnore) -> Result<()> {
     let metadata = fs::symlink_metadata(source)
@@ -138,6 +219,12 @@ mod tests {
     const LEGACY_CONTEST: &str = include_str!("../../tests/fixtures/json/contest.json");
     const TEMPLATE: &str = include_str!("../../tests/fixtures/json/template_legacy.json");
 
+    fn fixture_problem() -> Problem {
+        let mut contest: crate::client::model::Contest =
+            serde_json::from_str(LEGACY_CONTEST).unwrap();
+        contest.problems.remove("A").unwrap()
+    }
+
     fn create_legacy_workspace(base: &Path) -> PathBuf {
         let root = base.join("abc999");
         let problem = root.join("a");
@@ -158,18 +245,57 @@ mod tests {
     }
 
     #[test]
-    fn discovers_standalone_workspace_without_contest_json() {
+    fn saves_standalone_workspace_with_template_and_no_contest_json() {
         let temp = tempfile::tempdir().unwrap();
-        let directory = temp.path().join("abc999_a");
-        let mut contest: crate::client::model::Contest =
-            serde_json::from_str(LEGACY_CONTEST).unwrap();
-        let problem = contest.problems.remove("A").unwrap();
-        write_problem_to(&directory, &problem, None).unwrap();
-        fs::write(directory.join("template.json"), TEMPLATE).unwrap();
+        let template_root = temp.path().join("template");
+        fs::create_dir(&template_root).unwrap();
+        fs::write(template_root.join("template.json"), TEMPLATE).unwrap();
+        fs::write(template_root.join("main.py"), "print(input())\n").unwrap();
+        let template = TemplateData {
+            template_path: template_root,
+            ..TemplateData::default()
+        };
+        let problem = fixture_problem();
 
+        let directory = save_problem_to(temp.path(), &problem, Some(&template)).unwrap();
+        assert_eq!(directory, temp.path().join("abc999_a"));
+        assert!(!temp.path().join("contest.json").exists());
         let workspace = ProblemWorkspace::discover_from(&directory).unwrap();
         assert_eq!(workspace.problem(), &problem);
         assert_eq!(workspace.submit_path(), directory.join("main.py"));
+        assert_eq!(
+            fs::read_to_string(workspace.submit_path()).unwrap(),
+            "print(input())\n"
+        );
+    }
+
+    #[test]
+    fn saves_only_problem_metadata_without_template() {
+        let temp = tempfile::tempdir().unwrap();
+        let problem = fixture_problem();
+        let directory = save_problem_to(temp.path(), &problem, None).unwrap();
+
+        assert_eq!(directory, temp.path().join("abc999_a"));
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        assert_eq!(load_problem_from(&directory).unwrap(), problem);
+    }
+
+    #[test]
+    fn refuses_to_replace_existing_problem_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let problem = fixture_problem();
+        let directory = temp.path().join(&problem.id);
+        fs::create_dir(&directory).unwrap();
+        assert!(save_problem_to(temp.path(), &problem, None).is_err());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+
+        fs::write(directory.join("main.py"), "solution").unwrap();
+        fs::write(directory.join(PROBLEM_JSON), "metadata").unwrap();
+        assert!(save_problem_to(temp.path(), &problem, None).is_err());
+        assert_eq!(fs::read(directory.join("main.py")).unwrap(), b"solution");
+        assert_eq!(fs::read(directory.join(PROBLEM_JSON)).unwrap(), b"metadata");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[test]

@@ -9,10 +9,11 @@ use crate::application::submit::{PreparedSolution, prepare_solution, submit_prep
 use crate::client::AtCoderClient;
 use crate::client::auth::{prompt_revel_session, verify_current_session};
 use crate::client::cookie::Cookie;
+use crate::client::model::{Contest, Problem};
 use crate::validation::validate_atcoder_identifier;
 use crate::workspace::command::{CommandInput, SystemCommandRunner};
 use crate::workspace::contest::save_contest_to;
-use crate::workspace::problem::ProblemWorkspace;
+use crate::workspace::problem::{ProblemWorkspace, save_problem_to};
 use crate::workspace::template::{
     NewTemplate, TemplateRegistry, create_template, load_template_config_from,
 };
@@ -22,7 +23,9 @@ use std::path::PathBuf;
 
 pub(crate) enum AppEvent {
     FetchingContest(String),
+    FetchingProblem { contest_id: String, label: String },
     SavingContest(String),
+    SavingProblem(String),
     Testing,
     TestSuccessful,
     Submitting,
@@ -45,6 +48,11 @@ pub(crate) enum SessionStatus {
 
 pub(crate) struct DownloadOutcome {
     pub(crate) path: PathBuf,
+}
+
+enum Download {
+    Contest(Contest),
+    Problem(Problem),
 }
 
 pub(crate) struct SubmitOutcome {
@@ -83,6 +91,7 @@ impl Application {
     pub(crate) async fn download<F>(
         &self,
         contest_id: &str,
+        problem_label: Option<&str>,
         template_name: Option<&str>,
         no_template: bool,
         mut event: F,
@@ -91,18 +100,35 @@ impl Application {
         F: FnMut(AppEvent),
     {
         validate_atcoder_identifier(contest_id, "contest ID")?;
-        event(AppEvent::FetchingContest(contest_id.to_string()));
+        event(match problem_label {
+            Some(label) => AppEvent::FetchingProblem {
+                contest_id: contest_id.to_string(),
+                label: label.to_string(),
+            },
+            None => AppEvent::FetchingContest(contest_id.to_string()),
+        });
         let client = AtCoderClient::from_stored_session()?;
-        let contest = client.fetch_contest(contest_id).await?;
+        let download = match problem_label {
+            Some(label) => {
+                Download::Problem(client.fetch_problem_by_label(contest_id, label).await?)
+            }
+            None => Download::Contest(client.fetch_contest(contest_id).await?),
+        };
 
-        event(AppEvent::SavingContest(contest_id.to_string()));
+        event(match &download {
+            Download::Contest(contest) => AppEvent::SavingContest(contest.id.clone()),
+            Download::Problem(problem) => AppEvent::SavingProblem(problem.id.clone()),
+        });
         let registry = (!no_template).then(TemplateRegistry::load).transpose()?;
         let template = registry
             .as_ref()
             .map(|registry| registry.select(template_name))
             .transpose()?
             .flatten();
-        let path = save_contest_to(&self.start_path, &contest, template)?;
+        let path = match download {
+            Download::Contest(contest) => save_contest_to(&self.start_path, &contest, template)?,
+            Download::Problem(problem) => save_problem_to(&self.start_path, &problem, template)?,
+        };
         Ok(DownloadOutcome { path })
     }
 

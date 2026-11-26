@@ -34,14 +34,20 @@ enum Commands {
     /// Show login status / username
     Whoami,
     /// Download contest problems
-    #[command(visible_aliases = ["d", "n"])]
+    #[command(
+        visible_aliases = ["d", "n"],
+        after_help = "Examples:\n  ackit download abc485\n  ackit download abc485 --problem A\n  ackit d abc001 -p a"
+    )]
     Download {
         /// Contest ID (ex. abc001, ahc001, awc0001)
         contest_id: String,
+        /// Download only this task label from the contest (case-insensitive)
+        #[arg(short = 'p', long = "problem", value_name = "LABEL")]
+        problem_label: Option<String>,
         /// Template name
         #[arg(short = 't', long = "template", conflicts_with = "no_template")]
         template_name: Option<String>,
-        /// Save all problem metadata without applying a template
+        /// Save problem metadata without applying a template
         #[arg(short, long)]
         no_template: bool,
     },
@@ -177,7 +183,11 @@ pub(crate) fn parse() -> Cli {
 fn show_event(event: AppEvent) {
     match event {
         AppEvent::FetchingContest(id) => info!("Fetching contest '{id}'..."),
+        AppEvent::FetchingProblem { contest_id, label } => {
+            info!("Fetching problem '{label}' from contest '{contest_id}'...")
+        }
         AppEvent::SavingContest(id) => info!("Saving contest to '{id}'..."),
+        AppEvent::SavingProblem(id) => info!("Saving problem to '{id}'..."),
         AppEvent::Testing => info!("Testing..."),
         AppEvent::TestSuccessful => info!("Test successful."),
         AppEvent::Submitting => info!("Submitting..."),
@@ -356,12 +366,14 @@ pub(crate) async fn dispatch(cli: Cli, application: &Application) -> Result<()> 
         },
         Commands::Download {
             contest_id,
+            problem_label,
             template_name,
             no_template,
         } => {
             let outcome = application
                 .download(
                     &contest_id,
+                    problem_label.as_deref(),
                     template_name.as_deref(),
                     no_template,
                     show_event,
@@ -520,6 +532,7 @@ mod tests {
             command(&["ackit", "d", "abc999", "-t", "cpp"]),
             Commands::Download {
                 contest_id: "abc999".into(),
+                problem_label: None,
                 template_name: Some("cpp".into()),
                 no_template: false,
             }
@@ -535,6 +548,29 @@ mod tests {
             command(&["ackit", "n", "abc999"]),
             Commands::Download { .. }
         ));
+    }
+
+    #[test]
+    fn parses_single_problem_download_options() {
+        assert_eq!(
+            command(&["ackit", "download", "abc485", "--problem", "A", "-t", "cpp"]),
+            Commands::Download {
+                contest_id: "abc485".into(),
+                problem_label: Some("A".into()),
+                template_name: Some("cpp".into()),
+                no_template: false,
+            }
+        );
+        assert_eq!(
+            command(&["ackit", "d", "abc001", "-p", "a", "--no-template"]),
+            Commands::Download {
+                contest_id: "abc001".into(),
+                problem_label: Some("a".into()),
+                template_name: None,
+                no_template: true,
+            }
+        );
+        assert!(Cli::try_parse_from(["ackit", "download", "abc485", "A"]).is_err());
     }
 
     #[test]
