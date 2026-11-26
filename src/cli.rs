@@ -41,7 +41,7 @@ enum Commands {
         /// Template name
         #[arg(short = 't', long = "template", conflicts_with = "no_template")]
         template_name: Option<String>,
-        /// Skip clone default template
+        /// Save all problem metadata without applying a template
         #[arg(short, long)]
         no_template: bool,
     },

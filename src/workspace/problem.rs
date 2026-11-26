@@ -1,37 +1,116 @@
-use crate::client::model::{Contest, Problem};
-use crate::workspace::contest::{find_contest_root_from, load_contest_from};
-use crate::workspace::template::{TemplateConfig, load_template_config_from};
-use anyhow::{Context, Result};
+use crate::client::model::Problem;
+use crate::workspace::contest::{find_contest_root_from, load_legacy_contest_from};
+use crate::workspace::template::{TemplateConfig, TemplateData, load_template_config_from};
+use crate::workspace::template_ignore::TemplateIgnore;
+use anyhow::{Context, Result, bail};
+use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+pub(crate) const PROBLEM_JSON: &str = "problem.json";
+
+fn copy_recursive(source: &Path, destination: &Path, ignore: &TemplateIgnore) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)
+        .with_context(|| format!("Failed to inspect '{}'.", source.display()))?;
+    if ignore.is_ignored(source, metadata.is_dir()) {
+        return Ok(());
+    }
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "Template symlinks are not supported: '{}'.",
+            source.display()
+        );
+    }
+    if metadata.is_file() {
+        fs::copy(source, destination)?;
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        bail!("Unsupported template entry: '{}'.", source.display());
+    }
+
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        copy_recursive(&entry.path(), &destination.join(entry.file_name()), ignore)?;
+    }
+    Ok(())
+}
+
+// The caller can supply a destination inside its staging directory for atomic installation.
+pub(crate) fn write_problem_to(
+    destination: &Path,
+    problem: &Problem,
+    template: Option<&TemplateData>,
+) -> Result<()> {
+    fs::create_dir(destination).with_context(|| {
+        format!(
+            "Failed to create problem directory '{}'.",
+            destination.display()
+        )
+    })?;
+    if let Some(template) = template {
+        let ignore = TemplateIgnore::load(&template.template_path)
+            .context("Failed to load template ignore rules.")?;
+        copy_recursive(&template.template_path, destination, &ignore)
+            .context("Failed to copy template.")?;
+    }
+
+    let path = destination.join(PROBLEM_JSON);
+    let mut writer = io::BufWriter::new(
+        fs::File::create_new(&path)
+            .with_context(|| format!("Failed to create '{}'.", path.display()))?,
+    );
+    serde_json::to_writer_pretty(&mut writer, problem)
+        .with_context(|| format!("Failed to write '{}'.", path.display()))?;
+    writer
+        .flush()
+        .with_context(|| format!("Failed to flush '{}'.", path.display()))
+}
+
+fn load_problem_from(problem_dir: &Path) -> Result<Problem> {
+    let path = problem_dir.join(PROBLEM_JSON);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            let file = fs::File::open(&path)
+                .with_context(|| format!("Failed to open '{}'.", path.display()))?;
+            serde_json::from_reader(io::BufReader::new(file))
+                .with_context(|| format!("Failed to parse '{}'.", path.display()))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let contest_root = find_contest_root_from(problem_dir)?;
+            let mut contest = load_legacy_contest_from(&contest_root.join("contest.json"))?;
+            let problem_key = problem_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("Problem directory name must be valid UTF-8.")?
+                .to_uppercase();
+            contest
+                .problems
+                .remove(&problem_key)
+                .with_context(|| format!("Failed to get problem {problem_key} from contest."))
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("Failed to inspect '{}'.", path.display()))
+        }
+    }
+}
 
 pub(crate) struct ProblemWorkspace {
     problem_dir: PathBuf,
     template: TemplateConfig,
-    contest: Contest,
-    problem_key: String,
+    problem: Problem,
 }
 
 impl ProblemWorkspace {
     pub(crate) fn discover_from(start: &Path) -> Result<Self> {
-        let problem_dir = start.to_path_buf();
-        let template = load_template_config_from(&problem_dir.join("template.json"))?;
-        let contest_root = find_contest_root_from(&problem_dir)?;
-        let contest = load_contest_from(&contest_root.join("contest.json"))?;
-        let problem_key = problem_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("Problem directory name must be valid UTF-8.")?
-            .to_uppercase();
-        contest
-            .problems
-            .get(&problem_key)
-            .with_context(|| format!("Failed to get problem {problem_key} from contest."))?;
+        let problem = load_problem_from(start)?;
+        let template = load_template_config_from(&start.join("template.json"))?;
 
         Ok(Self {
-            problem_dir,
+            problem_dir: start.to_path_buf(),
             template,
-            contest,
-            problem_key,
+            problem,
         })
     }
 
@@ -43,12 +122,8 @@ impl ProblemWorkspace {
         &self.template
     }
 
-    pub(crate) fn contest(&self) -> &Contest {
-        &self.contest
-    }
-
     pub(crate) fn problem(&self) -> &Problem {
-        &self.contest.problems[&self.problem_key]
+        &self.problem
     }
 
     pub(crate) fn submit_path(&self) -> PathBuf {
@@ -59,28 +134,54 @@ impl ProblemWorkspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
-    #[test]
-    fn discovers_workspace_from_an_explicit_path() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("abc999");
+    const LEGACY_CONTEST: &str = include_str!("../../tests/fixtures/json/contest.json");
+    const TEMPLATE: &str = include_str!("../../tests/fixtures/json/template_legacy.json");
+
+    fn create_legacy_workspace(base: &Path) -> PathBuf {
+        let root = base.join("abc999");
         let problem = root.join("a");
         fs::create_dir_all(&problem).unwrap();
-        fs::write(
-            root.join("contest.json"),
-            include_str!("../../tests/fixtures/json/contest.json"),
-        )
-        .unwrap();
-        fs::write(
-            problem.join("template.json"),
-            include_str!("../../tests/fixtures/json/template_legacy.json"),
-        )
-        .unwrap();
+        fs::write(root.join("contest.json"), LEGACY_CONTEST).unwrap();
+        fs::write(problem.join("template.json"), TEMPLATE).unwrap();
+        problem
+    }
 
+    #[test]
+    fn discovers_legacy_workspace_from_an_explicit_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let problem = create_legacy_workspace(temp.path());
         let workspace = ProblemWorkspace::discover_from(&problem).unwrap();
         assert_eq!(workspace.problem().id, "abc999_a");
-        assert_eq!(workspace.contest().id, "abc999");
+        assert_eq!(workspace.problem().contest_id, "abc999");
         assert_eq!(workspace.submit_path(), problem.join("main.py"));
+    }
+
+    #[test]
+    fn discovers_standalone_workspace_without_contest_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("abc999_a");
+        let mut contest: crate::client::model::Contest =
+            serde_json::from_str(LEGACY_CONTEST).unwrap();
+        let problem = contest.problems.remove("A").unwrap();
+        write_problem_to(&directory, &problem, None).unwrap();
+        fs::write(directory.join("template.json"), TEMPLATE).unwrap();
+
+        let workspace = ProblemWorkspace::discover_from(&directory).unwrap();
+        assert_eq!(workspace.problem(), &problem);
+        assert_eq!(workspace.submit_path(), directory.join("main.py"));
+    }
+
+    #[test]
+    fn reports_invalid_problem_json_even_when_legacy_metadata_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let problem = create_legacy_workspace(temp.path());
+        fs::write(problem.join(PROBLEM_JSON), "{").unwrap();
+
+        let Err(error) = ProblemWorkspace::discover_from(&problem) else {
+            panic!("Invalid problem.json should fail discovery.");
+        };
+        assert!(error.to_string().contains("Failed to parse"));
+        assert!(error.to_string().contains(PROBLEM_JSON));
     }
 }
