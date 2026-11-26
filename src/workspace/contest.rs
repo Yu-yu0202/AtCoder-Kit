@@ -1,41 +1,20 @@
-use crate::client::model::Contest;
+use crate::client::model::{Contest, ContestType};
 use crate::validation::validate_atcoder_identifier;
+use crate::workspace::problem::{PROBLEM_JSON, write_problem_to};
 use crate::workspace::template::TemplateData;
-use crate::workspace::template_ignore::TemplateIgnore;
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-fn copy_recursive(source: &Path, destination: &Path, ignore: &TemplateIgnore) -> Result<()> {
-    let metadata = fs::symlink_metadata(source)
-        .with_context(|| format!("Failed to inspect '{}'.", source.display()))?;
-    if ignore.is_ignored(source, metadata.is_dir()) {
-        return Ok(());
-    }
-    if metadata.file_type().is_symlink() {
-        bail!(
-            "Template symlinks are not supported: '{}'.",
-            source.display()
-        );
-    }
-    if metadata.is_file() {
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(source, destination)?;
-        return Ok(());
-    }
-    if !metadata.is_dir() {
-        bail!("Unsupported template entry: '{}'.", source.display());
-    }
-
-    fs::create_dir_all(destination)?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        copy_recursive(&entry.path(), &destination.join(entry.file_name()), ignore)?;
-    }
-    Ok(())
+#[derive(Serialize)]
+struct ContestIndex<'a> {
+    id: &'a str,
+    contest_type: &'a ContestType,
+    title: &'a str,
+    problems: BTreeMap<&'a str, String>,
 }
 
 pub(crate) fn save_contest_to(
@@ -57,27 +36,31 @@ pub(crate) fn save_contest_to(
         .tempdir_in(base)
         .context("Failed to create contest staging directory.")?;
     let staging_path = staging.path();
-    let mut contest_json = io::BufWriter::new(
-        fs::File::create(staging_path.join("contest.json"))
-            .context("Failed to create contest.json.")?,
-    );
-    serde_json::to_writer_pretty(&mut contest_json, contest)
-        .context("Failed to write contest.json.")?;
-    contest_json
-        .flush()
-        .context("Failed to flush contest.json.")?;
-    drop(contest_json);
+    let mut index = ContestIndex {
+        id: &contest.id,
+        contest_type: &contest.contest_type,
+        title: &contest.title,
+        problems: BTreeMap::new(),
+    };
+    for (label, problem) in &contest.problems {
+        validate_atcoder_identifier(label, "problem label")?;
+        let directory = label.to_ascii_lowercase();
+        write_problem_to(&staging_path.join(&directory), problem, template)?;
+        index
+            .problems
+            .insert(label, format!("{directory}/{PROBLEM_JSON}"));
+    }
 
-    if let Some(template) = template {
-        let ignore = TemplateIgnore::load(&template.template_path)
-            .context("Failed to load template ignore rules.")?;
-        for label in contest.problems.keys() {
-            validate_atcoder_identifier(label, "problem label")?;
-            let problem_dir = staging_path.join(label.to_lowercase());
-            fs::create_dir_all(&problem_dir).context("Failed to create problem directory.")?;
-            copy_recursive(&template.template_path, &problem_dir, &ignore)
-                .context("Failed to copy template.")?;
-        }
+    {
+        let mut contest_json = io::BufWriter::new(
+            fs::File::create(staging_path.join("contest.json"))
+                .context("Failed to create contest.json.")?,
+        );
+        serde_json::to_writer_pretty(&mut contest_json, &index)
+            .context("Failed to write contest.json.")?;
+        contest_json
+            .flush()
+            .context("Failed to flush contest.json.")?;
     }
 
     let staging_path = staging.keep();
@@ -100,7 +83,7 @@ pub(crate) fn find_contest_root_from(start: &Path) -> Result<PathBuf> {
     }
 }
 
-pub(crate) fn load_contest_from(path: &Path) -> Result<Contest> {
+pub(crate) fn load_legacy_contest_from(path: &Path) -> Result<Contest> {
     let file =
         fs::File::open(path).with_context(|| format!("Failed to open '{}'.", path.display()))?;
     serde_json::from_reader(io::BufReader::new(file))
@@ -155,14 +138,54 @@ mod tests {
     }
 
     #[test]
-    fn preserves_existing_contest_json_contract() {
-        let fixture = include_str!("../../tests/fixtures/json/contest.json");
-        let contest = fixture_contest();
-        assert_eq!(contest.id, "abc999");
+    fn saves_contest_index_and_all_problems_with_template() {
+        let temp = tempfile::tempdir().unwrap();
+        let template_root = temp.path().join("python-template");
+        create_template_files(&template_root);
+        fs::write(template_root.join("problem.json"), "template data").unwrap();
+        let contest = fixture_contest_with_two_problems();
+
+        let root =
+            save_contest_to(temp.path(), &contest, Some(&template_data(&template_root))).unwrap();
+        let index: serde_json::Value =
+            serde_json::from_reader(fs::File::open(root.join("contest.json")).unwrap()).unwrap();
         assert_eq!(
-            serde_json::to_value(&contest).unwrap(),
-            serde_json::from_str::<serde_json::Value>(fixture).unwrap()
+            index,
+            serde_json::json!({
+                "id": "abc999",
+                "contest_type": "ABC",
+                "title": contest.title,
+                "problems": {"A": "a/problem.json", "B": "b/problem.json"},
+            })
         );
+        for (label, problem) in &contest.problems {
+            let path = root.join(index["problems"][label.as_str()].as_str().unwrap());
+            let workspace =
+                crate::workspace::problem::ProblemWorkspace::discover_from(path.parent().unwrap())
+                    .unwrap();
+            assert_eq!(workspace.problem(), problem);
+            assert!(workspace.submit_path().is_file());
+        }
+    }
+
+    #[test]
+    fn saves_every_problem_without_a_template() {
+        let temp = tempfile::tempdir().unwrap();
+        let contest = fixture_contest_with_two_problems();
+        let root = save_contest_to(temp.path(), &contest, None).unwrap();
+
+        for (label, problem) in &contest.problems {
+            let directory = root.join(label.to_ascii_lowercase());
+            let entries: Vec<_> = fs::read_dir(&directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(entries, [PROBLEM_JSON]);
+            let saved: crate::client::model::Problem =
+                serde_json::from_reader(fs::File::open(directory.join(PROBLEM_JSON)).unwrap())
+                    .unwrap();
+            assert_eq!(&saved, problem);
+        }
     }
 
     #[test]

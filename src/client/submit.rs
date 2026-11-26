@@ -59,11 +59,11 @@ fn absolute_url(href: &str) -> String {
 impl AtCoderClient {
     pub(crate) async fn submit_solution(
         &self,
-        contest_id: &str,
         problem: &Problem,
         language_id: u16,
         source_code: String,
     ) -> Result<String> {
+        let contest_id = &problem.contest_id;
         validate_atcoder_identifier(contest_id, "contest ID")?;
         validate_atcoder_identifier(&problem.id, "problem ID")?;
         let problem_url = endpoints::problem(contest_id, &problem.id);

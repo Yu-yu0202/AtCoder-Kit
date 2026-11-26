@@ -1,3 +1,4 @@
+use crate::workspace::problem::PROBLEM_JSON;
 use anyhow::{Context, Result, bail};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::fs;
@@ -56,7 +57,9 @@ impl TemplateIgnore {
         if relative.as_os_str().is_empty() {
             return false;
         }
-        if relative == Path::new(IGNORE_FILE_NAME) {
+        if relative == Path::new(IGNORE_FILE_NAME)
+            || relative.as_os_str().eq_ignore_ascii_case(PROBLEM_JSON)
+        {
             return true;
         }
         if relative == Path::new(TEMPLATE_CONFIG_NAME) {

@@ -101,7 +101,6 @@ pub(crate) async fn submit_prepared_solution(
 ) -> Result<String> {
     client
         .submit_solution(
-            &workspace.contest().id,
             workspace.problem(),
             workspace.template().language_id,
             source.source,
