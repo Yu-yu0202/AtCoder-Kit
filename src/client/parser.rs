@@ -165,7 +165,13 @@ pub(crate) fn parse_problem_page(html: &str) -> Result<ParsedProblemPage> {
     let title_text = document
         .select(&title_selector)
         .next()
-        .map(element_text)
+        .map(|title| {
+            title
+                .children()
+                .filter_map(|child| child.value().as_text())
+                .map(|text| text.text.to_string())
+                .collect::<String>()
+        })
         .context("Failed to get problem title.")?;
     let (label, title) = title_text
         .trim()
@@ -335,6 +341,16 @@ mod tests {
         assert_eq!(page.time_limit_msecs, 500);
         assert_eq!(page.memory_limit_bytes, 64_000);
         assert_eq!(page.sample_cases.len(), 1);
+    }
+
+    #[test]
+    fn excludes_nested_editorial_link_from_problem_title() {
+        let html = PROBLEM_EN.replace(
+            "<span class=\"h2\">B - English Problem</span>",
+            "<span class=\"h2\">B - English Problem<a href=\"/editorial\">Editorial</a></span>",
+        );
+        let page = parse_problem_page(&html).unwrap();
+        assert_eq!(page.title, "English Problem");
     }
 
     #[test]
