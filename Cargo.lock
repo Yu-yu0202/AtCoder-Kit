@@ -99,6 +99,7 @@ dependencies = [
  "reqwest",
  "reqwest-middleware",
  "rpassword",
+ "rustix",
  "scraper",
  "serde",
  "serde_json",
